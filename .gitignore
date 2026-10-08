@@ -1,0 +1,6 @@
+build*/
+*.pem
+*.key
+*.rdp
+__pycache__/
+.pytest_cache/
