@@ -32,7 +32,9 @@ Layout validate_layout(std::vector<Monitor> monitors, DisplayLimits limits) {
             std::int64_t(a.top) < std::int64_t(b.top) + b.height && std::int64_t(b.top) < std::int64_t(a.top) + a.height;
         require(!overlap, "overlapping monitors are not supported");
     }
-    const auto maximum_area = std::uint64_t(limits.area_a) * limits.area_b;
+    const auto factor_area = std::uint64_t(limits.area_a) * limits.area_b;
+    require(factor_area <= std::numeric_limits<std::uint64_t>::max() / limits.max_monitors, "display area capability overflow");
+    const auto maximum_area = factor_area * limits.max_monitors;
     require(area <= maximum_area && std::uint64_t(right - left) * std::uint64_t(bottom - top) <= maximum_area,
             "display allocation exceeds advertised area");
     require(right - left <= limits.max_desktop_dimension && bottom - top <= limits.max_desktop_dimension, "desktop extent exceeds limit");

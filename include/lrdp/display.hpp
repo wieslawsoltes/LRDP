@@ -14,7 +14,7 @@ struct Monitor {
 };
 struct DisplayLimits {
     std::uint32_t max_monitors = 16;
-    std::uint32_t area_a = 4096, area_b = 4096;
+    std::uint32_t area_a = 1024, area_b = 1024;
     std::uint32_t max_desktop_dimension = 16384;
 };
 struct Layout {
