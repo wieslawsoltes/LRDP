@@ -43,7 +43,7 @@ struct AudioEndpoint {
             if (packet->requested) frames = std::min(frames, packet->requested);
             const auto size = std::size_t(frames) * block; std::memset(bytes, 0, size);
             if (enabled.load()) (void)ring.pop(std::span(bytes, size), false, format.byte_rate() / 10);
-            else ring.discard(); // Only this real-time consumer advances the microphone read cursor.
+            else ring.discard();
             data.chunk->offset = 0; data.chunk->size = std::uint32_t(size); data.chunk->stride = block; packet->size = frames;
         }
     }
@@ -53,6 +53,9 @@ struct AudioEndpoint {
             PW_KEY_MEDIA_TYPE, "Audio", PW_KEY_MEDIA_CLASS, sink ? "Audio/Sink" : "Audio/Source",
             PW_KEY_MEDIA_CATEGORY, sink ? "Capture" : "Playback", PW_KEY_MEDIA_ROLE, "Communication",
             "node.virtual", "true", "node.want-driver", "true", "node.latency", "960/48000",
+            // Virtual Audio/Sink and Audio/Source adapters need their DSP ports
+            // configured explicitly when no desktop session manager does it.
+            "adapter.auto-port-config", "{ mode = dsp monitor = false control = false position = preserve }",
             "audio.position", sink ? "[ FL FR ]" : "[ MONO ]", nullptr));
         require(stream != nullptr, "cannot create virtual PipeWire audio device");
         static const pw_stream_events events = [] {
@@ -74,7 +77,6 @@ struct AudioEndpoint {
         spa_audio_info_raw info{}; info.format = SPA_AUDIO_FORMAT_S16_LE; info.rate = format.rate; info.channels = format.channels;
         info.position[0] = sink ? SPA_AUDIO_CHANNEL_FL : SPA_AUDIO_CHANNEL_MONO; if (sink) info.position[1] = SPA_AUDIO_CHANNEL_FR;
         const spa_pod* parameter = spa_format_audio_raw_build(&builder, SPA_PARAM_EnumFormat, &info);
-        // Publish virtual devices; never autoconnect physical microphones or change defaults.
         require(pw_stream_connect(stream, sink ? PW_DIRECTION_INPUT : PW_DIRECTION_OUTPUT, PW_ID_ANY,
             pw_stream_flags(PW_STREAM_FLAG_MAP_BUFFERS | PW_STREAM_FLAG_RT_PROCESS | PW_STREAM_FLAG_INACTIVE), &parameter, 1) >= 0,
             "cannot publish virtual PipeWire audio device");
@@ -101,7 +103,7 @@ class PipeWireAudio final : public AudioDevices {
         if (endpoint->enabled.load() != enabled) {
             endpoint->enabled.store(enabled);
             const auto result = pw_stream_set_active(endpoint->stream, enabled);
-            if (!enabled && endpoint->sink) endpoint->ring.discard(); // Network thread is playback's consumer.
+            if (!enabled && endpoint->sink) endpoint->ring.discard();
             if (result < 0) endpoint->failed.store(true);
         }
         pw_thread_loop_unlock(loop_); check();
@@ -136,7 +138,8 @@ public:
     std::optional<Bytes> take_playback(unsigned frames) override {
         check(); require(playback_ && frames > 0 && frames <= 4800, "invalid audio capture request");
         Bytes pcm(std::size_t(frames) * playback_->format.block_size());
-        if (playback_->ring.pop(pcm, true, playback_->format.byte_rate() / 10) == pcm.size()) return pcm; return std::nullopt;
+        if (playback_->ring.pop(pcm, true, playback_->format.byte_rate() / 10) == pcm.size()) return pcm;
+        return std::nullopt;
     }
     void feed_microphone(View pcm) override {
         check(); require(microphone_ && pcm.size() <= 9600 && pcm.size() % microphone_->format.block_size() == 0, "invalid microphone block");

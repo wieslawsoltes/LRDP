@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Isolated native PipeWire graph; no physical devices or user settings touched."""
+"""Isolated PipeWire graph; no physical devices or user settings touched."""
 from __future__ import annotations
 import os
 import pathlib
@@ -21,7 +21,7 @@ def connect_loopback(pid: int, environment: dict[str, str]) -> None:
                 subprocess.run(['pw-link', source[0], sink], env=environment, check=True, capture_output=True, timeout=5)
             return
         time.sleep(0.05)
-    raise RuntimeError(f'virtual audio ports did not appear; outputs={outputs.stdout}; inputs={inputs.stdout}; errors={outputs.stderr}{inputs.stderr}')
+    raise RuntimeError(f'virtual ports missing; outputs={outputs.stdout}; inputs={inputs.stdout}; errors={outputs.stderr}{inputs.stderr}')
 
 
 def run(command: list[str], *, native_fixture: bool = True) -> None:
@@ -53,8 +53,7 @@ def run(command: list[str], *, native_fixture: bool = True) -> None:
                 if 'AddressSanitizer' in text or 'runtime error:' in text: raise RuntimeError('sanitizer reported a native audio error')
             except Exception:
                 daemon_log.seek(0); print('PIPEWIRE LOG:\n' + daemon_log.read())
-                test_log.seek(0); print('TEST LOG:\n' + test_log.read())
-                raise
+                test_log.seek(0); print('TEST LOG:\n' + test_log.read()); raise
             finally:
                 for process in (test, daemon):
                     if process is None: continue
@@ -63,4 +62,6 @@ def run(command: list[str], *, native_fixture: bool = True) -> None:
                     except subprocess.TimeoutExpired: process.kill(); process.wait()
 
 
-if __name__ == '__main__': run(sys.argv[1:])
+if __name__ == '__main__':
+    if sys.argv[1] == '--rdp': run([sys.executable, str(pathlib.Path(__file__).with_name('audio_integration.py')), sys.argv[2]], native_fixture=False)
+    else: run(sys.argv[1:])
