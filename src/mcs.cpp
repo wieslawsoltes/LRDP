@@ -1,4 +1,5 @@
 #include "lrdp/mcs.hpp"
+#include "lrdp/monitor_layout.hpp"
 #include <algorithm>
 #include <array>
 #include <set>
@@ -30,6 +31,7 @@ ClientSettings connect_initial(View payload, std::uint32_t selected_protocol) {
     prefix(gcc, {0,8,0,0x10,0,1,0xc0,0,'D','u','c','a'});
     Reader blocks(gcc.take(gcc.per_length())); gcc.end();
     ClientSettings settings; bool core_seen = false, security_seen = false, network_seen = false;
+    View monitor_data, monitor_attributes;
     std::set<unsigned> seen;
     while (!blocks.empty()) {
         const auto type = blocks.le16(), length = blocks.le16();
@@ -40,7 +42,7 @@ ClientSettings connect_initial(View payload, std::uint32_t selected_protocol) {
             require(data.remaining() >= 212, "TLS negotiation requires extended Client Core Data");
             require(data.le32() >= 0x00080004, "RDP 5 or newer required");
             settings.width = data.le16(); settings.height = data.le16();
-            require(settings.width >= 200 && settings.width <= 8192 && settings.height >= 200 && settings.height <= 8192,
+            require(settings.width >= 200 && settings.width <= 16384 && settings.height >= 200 && settings.height <= 16384,
                     "initial desktop dimensions exceed policy");
             data.skip(4); settings.keyboard_layout = data.le32(); data.skip(112);
             const auto post_beta = data.le16(); data.skip(6); const auto high_color = data.le16();
@@ -65,11 +67,19 @@ ClientSettings connect_initial(View payload, std::uint32_t selected_protocol) {
                 require(settings.channels.emplace(text, id).second, "duplicate static channel name");
                 settings.channel_ids.push_back(id); data.skip(4);
             }
-        }
+        } else if (type == 0xc005) monitor_data = data.take(data.remaining());
+        else if (type == 0xc008) monitor_attributes = data.take(data.remaining());
         // Unknown optional GCC extensions are length-delimited and not advertised in response.
     }
     require(core_seen && security_seen, "required GCC client data missing");
     (void)network_seen;
+    require(!seen.contains(0xc008) || seen.contains(0xc005), "monitor attributes without monitor definitions");
+    if (seen.contains(0xc005)) {
+        if (seen.contains(0xc008)) require(!monitor_attributes.empty(), "empty monitor attributes");
+        settings.monitors = decode_initial_monitors(monitor_data, monitor_attributes);
+        // Monitor topology defines the desktop dimensions when supplied.
+        settings.width = std::uint16_t(settings.monitors->width); settings.height = std::uint16_t(settings.monitors->height);
+    } else require(settings.width <= 8192 && settings.height <= 8192, "single monitor exceeds policy");
     require(std::uint64_t(settings.width) * settings.height <= 16 * 1024 * 1024, "initial framebuffer exceeds quota");
     return settings;
 }
@@ -94,33 +104,16 @@ Bytes mcs_data(std::uint16_t channel, View payload) {
     Writer out; out.u8(0x68).be16(server_user - 1001).be16(channel).u8(0x70).per_length(payload.size()).raw(payload);
     return x224_data(out.bytes());
 }
-Bytes share_control(std::uint16_t type, View payload) {
-    Writer out; out.le16(unsigned(payload.size() + 6)).le16(type | 0x10).le16(server_user).raw(payload);
+Bytes share_control(std::uint16_t type, View payload, std::uint16_t source) {
+    Writer out; out.le16(unsigned(payload.size() + 6)).le16(type | 0x10).le16(source).raw(payload);
     return std::move(out).finish();
 }
-Bytes share_data(std::uint8_t type, View payload) {
+Bytes share_data(std::uint8_t type, View payload, std::uint16_t source) {
     Writer out; out.le32(share_id).u8(0).u8(2).le16(unsigned(payload.size() + 18)).u8(type).u8(0).le16(0).raw(payload);
-    return share_control(7, out.bytes());
+    return share_control(7, out.bytes(), source);
 }
 Bytes valid_client_license() {
     Writer out; out.le16(0x80).le16(0).u8(0xff).u8(3).le16(16).le32(7).le32(2).le16(4).le16(0);
     return std::move(out).finish();
-}
-Bytes demand_active(std::uint16_t width, std::uint16_t height, std::uint16_t depth, bool resize, bool unicode_input) {
-    Writer caps;
-    Writer general; general.le16(4).le16(0).le16(0x200).le16(0).le16(0).le16(0).le16(0).zeros(6).u8(1).u8(1);
-    capability(caps, 1, general);
-    Writer bitmap; bitmap.le16(depth).le16(1).le16(1).le16(1).le16(width).le16(height).le16(0).le16(resize ? 1 : 0)
-        .le16(1).u8(0).u8(0).le16(1).le16(0); capability(caps, 2, bitmap);
-    Writer order; order.zeros(20).le16(1).le16(20).le16(0).le16(1).le16(0).le16(2).zeros(52);
-    capability(caps, 3, order); // No drawing orders or caches advertised.
-    Writer pointer; pointer.le16(1).le16(0); capability(caps, 8, pointer);
-    Writer share; share.le16(server_user).le16(0); capability(caps, 9, share);
-    Writer input; input.le16(unicode_input ? 0x135 : 0x125).zeros(82); capability(caps, 13, input); // fast-path, Unicode, mouse X/hwheel
-    Writer font; font.le16(1).le16(0); capability(caps, 14, font);
-    Writer vc; vc.le32(0).le32(1600); capability(caps, 20, vc);
-    Writer body; body.le32(share_id).le16(5).le16(unsigned(caps.size() + 4)).raw({'L','R','D','P',0})
-        .le16(8).le16(0).raw(caps.bytes()).le32(0);
-    return share_control(1, body.bytes());
 }
 } // namespace lrdp

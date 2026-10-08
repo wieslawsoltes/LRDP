@@ -23,7 +23,12 @@ def size_of_demand(pdu: bytes) -> tuple[int,int]:
     raise AssertionError('bitmap capability missing')
 
 
-def run(binary: str, application: str) -> None:
+class MultiMonitorClient(Client):
+    initial_monitors = ((0,0,639,479,1),(-640,0,-1,479,0))
+    initial_attributes = ((300,200,0,150,140),(300,200,0,100,100))
+
+
+def run(binary: str, application: str, initial_monitors: bool = False) -> None:
     with tempfile.TemporaryDirectory(prefix='lrdp-headless-test-') as directory:
         root = pathlib.Path(directory); cert, key = root/'cert.pem', root/'key.pem'; app_log = root/'application.log'
         subprocess.run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-days','1',
@@ -40,9 +45,13 @@ def run(binary: str, application: str) -> None:
                     if 'listening' in log.read(): break
                     assert server.poll() is None and time.monotonic()<deadline,'headless server did not start'
                     time.sleep(0.01)
-                client = Client(socket.create_connection(('127.0.0.1',port)),cert); client.connect()
+                client_class = MultiMonitorClient if initial_monitors else Client
+                client = client_class(socket.create_connection(('127.0.0.1',port)),cert); client.connect()
                 client.until(lambda: len(client.pixel_coverage)==40 and client.display_caps is not None and client.remote_text is not None)
-                assert size_of_demand(client.demand)==(640,480)
+                assert size_of_demand(client.demand)==((1280,480) if initial_monitors else (640,480))
+                if initial_monitors:
+                    reports = [body[18:] for kind,body in client.events if kind == 55]
+                    assert reports and reports[-1] == u32(2)+b''.join(struct.pack('<iiiiI',*m) for m in MultiMonitorClient.initial_monitors)
                 assert client.remote_text == 'persistent Linux application clipboard'
                 pixel = (20*640+20)*3
                 client.until(lambda: client.pixels[pixel:pixel+3]==bytes([0x99,0x66,0x33]))
@@ -80,4 +89,4 @@ def run(binary: str, application: str) -> None:
                 except subprocess.TimeoutExpired: server.kill(); server.wait()
 
 
-if __name__ == '__main__': run(str(pathlib.Path(sys.argv[1]).resolve()), str(pathlib.Path(sys.argv[2]).resolve()))
+if __name__ == '__main__': run(str(pathlib.Path(sys.argv[1]).resolve()), str(pathlib.Path(sys.argv[2]).resolve()), '--initial-monitors' in sys.argv[3:])

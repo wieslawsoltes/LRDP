@@ -14,7 +14,7 @@ if(LRDP_SANITIZE)
 endif()
 find_package(Threads REQUIRED)
 add_library(lrdp_protocol src/wire.cpp src/channels.cpp src/clipboard.cpp src/display.cpp
-  src/mcs.cpp src/desktop.cpp src/session.cpp src/session_updates.cpp src/session_input.cpp
+  src/mcs.cpp src/capabilities.cpp src/monitor_layout.cpp src/desktop.cpp src/session.cpp src/session_updates.cpp src/session_input.cpp
   src/session_channels.cpp src/session_graphics.cpp src/session_audio.cpp src/graphics.cpp
   src/video_worker.cpp src/audio_format.cpp src/audio_output.cpp src/audio_input.cpp)
 target_include_directories(lrdp_protocol PUBLIC include)
@@ -24,7 +24,7 @@ add_library(lrdp_capture src/capture_frame.cpp)
 target_link_libraries(lrdp_capture PUBLIC lrdp_protocol)
 target_compile_options(lrdp_capture PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
 if(BUILD_TESTING)
-  foreach(name IN ITEMS protocol graphics audio transport_queue)
+  foreach(name IN ITEMS protocol graphics audio transport_queue monitor_layout)
     add_executable(lrdp_${name}_tests tests/${name}_tests.cpp)
     target_link_libraries(lrdp_${name}_tests PRIVATE lrdp_protocol)
     add_test(NAME ${name} COMMAND lrdp_${name}_tests)

@@ -18,6 +18,9 @@ if(LRDP_HEADLESS AND TARGET lrdp_x11)
       add_test(NAME headless_session COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/headless_integration.py
         $<TARGET_FILE:lrdpd> $<TARGET_FILE:lrdp_headless_app>)
       set_tests_properties(headless_session PROPERTIES TIMEOUT 60)
+      add_test(NAME headless_initial_monitors COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/headless_integration.py
+        $<TARGET_FILE:lrdpd> $<TARGET_FILE:lrdp_headless_app> --initial-monitors)
+      set_tests_properties(headless_initial_monitors PROPERTIES TIMEOUT 60)
     endif()
   endif()
 endif()
