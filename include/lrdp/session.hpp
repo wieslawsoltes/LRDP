@@ -25,6 +25,7 @@ class Session {
     std::optional<std::uint16_t> clipboard_channel_, dynamic_channel_, sound_channel_;
     std::optional<DisplayController> display_;
     BitmapEncoder bitmap_;
+    PointerEncoder pointer_;
     Graphics graphics_;
     VideoFactory video_factory_;
     std::unique_ptr<VideoWorker> video_;

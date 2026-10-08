@@ -24,7 +24,7 @@ Bytes demand_active(std::uint16_t width, std::uint16_t height, std::uint16_t dep
         .le16(1).u8(0).u8(0).le16(1).le16(0); caps.add(2,bitmap);
     Writer order; order.zeros(20).le16(1).le16(20).le16(0).le16(1).le16(0).le16(2).zeros(52);
     caps.add(3,order); // No drawing orders or caches advertised.
-    Writer pointer; pointer.le16(1).le16(0); caps.add(8,pointer);
+    Writer pointer; pointer.le16(1).le16(32).le16(32); caps.add(8,pointer);
     Writer share; share.le16(server_user).le16(0); caps.add(9,share);
     Writer input; input.le16(unicode_input ? 0x135 : 0x125).zeros(82); caps.add(13,input);
     Writer font; font.le16(1).le16(0); caps.add(14,font);
