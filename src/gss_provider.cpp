@@ -1,4 +1,5 @@
 #include "lrdp/security/credssp.hpp"
+#include "lrdp/security/ntlm_policy.hpp"
 #include <cstring>
 #include <gssapi/gssapi.h>
 #include <openssl/crypto.h>
@@ -23,11 +24,12 @@ bool oid(gss_OID value, View bytes) {
 class GssProvider final : public SecurityProvider {
     gss_cred_id_t credential_ = GSS_C_NO_CREDENTIAL;
     gss_ctx_id_t context_ = GSS_C_NO_CONTEXT;
-    bool established_ = false, allow_ntlm_;
+    bool established_ = false, allow_ntlm_, ntlm_ = false, ntlm_v2_seen_ = false;
+    std::uint32_t receive_sequence_ = 0, send_sequence_ = 0;
 public:
     explicit GssProvider(const GssOptions& options) : allow_ntlm_(options.allow_ntlm) {
         require(!options.service.empty() && options.service.size() <= 512 && options.service.find('@') != std::string::npos,
-                "GSS service must be an explicit host-based name such as TERMSRV@host.example.org");
+                "GSS service requires an explicit host-based name such as TERMSRV@host.example.org");
         OM_uint32 minor = 0; Name name;
         gss_buffer_desc input{options.service.size(), const_cast<char*>(options.service.data())};
         success(gss_import_name(&minor, &input, GSS_C_NT_HOSTBASED_SERVICE, &name.value), "import GSS acceptor service");
@@ -41,6 +43,11 @@ public:
     }
     SecurityStep accept(View token) override {
         require(!established_ && !token.empty() && token.size() <= 65536, "invalid GSS authentication state");
+        if (const auto mechanism_token = spnego_mechanism_token(token); mechanism_token && ntlm_signature(*mechanism_token)) {
+            require(allow_ntlm_, "NTLM is disabled by server policy");
+            Reader header(*mechanism_token); header.skip(8);
+            if (header.le32() == 3) { validate_ntlm_v2_authenticate(*mechanism_token); ntlm_v2_seen_ = true; }
+        }
         OM_uint32 minor = 0, flags = 0; Name source; Buffer output; gss_OID mechanism = GSS_C_NO_OID;
         gss_buffer_desc input{token.size(), const_cast<std::uint8_t*>(token.data())};
         const auto major = gss_accept_sec_context(&minor, &context_, credential_, &input, GSS_C_NO_CHANNEL_BINDINGS,
@@ -48,13 +55,23 @@ public:
         require(major == GSS_S_COMPLETE || major == GSS_S_CONTINUE_NEEDED, "GSS authentication failed");
         SecurityStep step{output.copy(), major == GSS_S_COMPLETE, {}};
         if (step.complete) {
-            constexpr OM_uint32 required = GSS_C_INTEG_FLAG | GSS_C_CONF_FLAG | GSS_C_SEQUENCE_FLAG | GSS_C_REPLAY_FLAG;
-            require((flags & required) == required, "GSS mechanism lacks required confidentiality/integrity/replay protection");
             const Bytes kerberos{0x2a,0x86,0x48,0x86,0xf7,0x12,1,2,2};
             const Bytes ms_kerberos{0x2a,0x86,0x48,0x82,0xf7,0x12,1,2,2};
             const Bytes ntlm{0x2b,6,1,4,1,0x82,0x37,2,2,0x0a};
-            require(oid(mechanism, kerberos) || oid(mechanism, ms_kerberos) || (allow_ntlm_ && oid(mechanism, ntlm)),
+            ntlm_ = oid(mechanism, ntlm);
+            require(oid(mechanism, kerberos) || oid(mechanism, ms_kerberos) || (allow_ntlm_ && ntlm_),
                     "GSS selected a mechanism excluded by server policy");
+            constexpr OM_uint32 protection = GSS_C_INTEG_FLAG | GSS_C_CONF_FLAG;
+            require((flags & protection) == protection && !(flags & GSS_C_ANON_FLAG), "GSS context lacks authenticated confidentiality/integrity");
+            if (ntlm_) {
+                // GSS-NTLMSSP acceptors report SIGN/SEAL but not the abstract
+                // GSS sequence/replay flags. Enforce ESS sequence numbers in
+                // addition to mandatory GSS signature verification on each PDU.
+                require(ntlm_v2_seen_, "GSS NTLM context did not authenticate an inspected NTLMv2 response");
+            } else {
+                constexpr OM_uint32 order = GSS_C_SEQUENCE_FLAG | GSS_C_REPLAY_FLAG;
+                require((flags & order) == order, "Kerberos context lacks replay and sequence protection");
+            }
             Buffer text; success(gss_display_name(&minor, source.value, &text.value, nullptr), "read authenticated principal");
             require(text.value.length > 0 && text.value.length <= 1024, "invalid GSS principal length");
             step.principal.assign(static_cast<const char*>(text.value.value), text.value.length);
@@ -68,14 +85,19 @@ public:
         OM_uint32 minor = 0; int confidential = 0; Buffer output;
         gss_buffer_desc input{plaintext.size(), const_cast<std::uint8_t*>(plaintext.data())};
         success(gss_wrap(&minor, context_, 1, GSS_C_QOP_DEFAULT, &input, &confidential, &output.value), "GSS encrypt");
-        require(confidential != 0 && output.value.length <= 1024 * 1024, "GSS did not encrypt the message"); return output.copy();
+        require(confidential != 0 && output.value.length <= 1024 * 1024, "GSS did not encrypt the message");
+        auto result = output.copy();
+        if (ntlm_) { require(send_sequence_ < 16, "excessive NTLM protected messages"); validate_ntlm_sequence(result, send_sequence_++); }
+        return result;
     }
     Bytes unseal(View ciphertext) override {
         require(established_ && !ciphertext.empty() && ciphertext.size() <= 1024 * 1024, "GSS unseal outside authenticated context");
+        if (ntlm_) { require(receive_sequence_ < 16, "excessive NTLM protected messages"); validate_ntlm_sequence(ciphertext, receive_sequence_); }
         OM_uint32 minor = 0; int confidential = 0; Buffer output; gss_qop_t qop = GSS_C_QOP_DEFAULT;
         gss_buffer_desc input{ciphertext.size(), const_cast<std::uint8_t*>(ciphertext.data())};
         success(gss_unwrap(&minor, context_, &input, &output.value, &confidential, &qop), "GSS decrypt");
         require(confidential != 0 && qop == GSS_C_QOP_DEFAULT && output.value.length <= 1024 * 1024, "invalid GSS encrypted message");
+        if (ntlm_) ++receive_sequence_;
         return output.copy();
     }
 };

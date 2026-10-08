@@ -78,8 +78,7 @@ struct PortalSession::Impl {
         context.check(); async->stopping = true;
         if (bus) {
             for (auto id : subscriptions) g_dbus_connection_signal_unsubscribe(bus.get(), id);
-            subscriptions.clear();
-            incoming.reset(); outgoing.clear(); requests.clear();
+            subscriptions.clear(); incoming.reset(); outgoing.clear(); requests.clear();
             if (!session.empty() && !g_dbus_connection_is_closed(bus.get())) {
                 Error error;
                 Variant ignored(g_dbus_connection_call_sync(bus.get(), owner.c_str(), session.c_str(), session_interface,
@@ -126,7 +125,6 @@ struct PortalSession::Impl {
                 GVariant* result = nullptr; g_variant_get(parameters, "(u@a{sv})", &r.code, &result);
                 r.result.reset(result); r.received = true;
             }, &reply, nullptr)};
-        require(subscription.id != 0, "cannot subscribe to portal response");
         const auto result = call(iface, method, build(id), G_VARIANT_TYPE("(o)"));
         const gchar* returned = nullptr; g_variant_get(result.get(), "(&o)", &returned);
         require(returned == path, "portal returned an unexpected request handle");
@@ -144,7 +142,7 @@ struct PortalSession::Impl {
     }
     void enqueue(const char* iface, const char* method, GVariant* parameters) {
         check(); require(async->pending < 256, "portal asynchronous operation queue is full");
-        auto* state = new std::shared_ptr<AsyncState>(async); ++async->pending;
+        auto* retained = new std::shared_ptr<AsyncState>(async); ++async->pending;
         g_dbus_connection_call(bus.get(), owner.c_str(), object, iface, method, parameters, G_VARIANT_TYPE_UNIT,
             G_DBUS_CALL_FLAGS_NONE, 3000, cancel.get(),
             [](GObject* source, GAsyncResult* result, gpointer data) {
@@ -153,7 +151,7 @@ struct PortalSession::Impl {
                 Variant reply(g_dbus_connection_call_finish(G_DBUS_CONNECTION(source), result, &error.value));
                 if (!reply && !state.stopping) state.failed = true;
                 --state.pending;
-            }, state);
+            }, retained);
     }
     UniqueFd descriptor(const char* iface, const char* method, GVariant* parameters) {
         check(); Error error; GUnixFDList* raw_fds = nullptr;
@@ -166,7 +164,7 @@ struct PortalSession::Impl {
         require(fcntl(fd.get(), F_SETFD, FD_CLOEXEC) == 0, "cannot protect portal descriptor across exec"); return fd;
     }
     void owner_changed(GVariant* parameters) {
-        if (!g_variant_is_of_type(parameters, G_VARIANT_TYPE("(oa{sv})"))) throw ProtocolError("invalid clipboard owner signal");
+        require(g_variant_is_of_type(parameters, G_VARIANT_TYPE("(oa{sv})")), "invalid clipboard owner signal");
         const gchar* path = nullptr; GVariant* raw = nullptr; g_variant_get(parameters, "(&o@a{sv})", &path, &raw); Variant fields(raw);
         if (path != session) return;
         ++generation; incoming.reset(); requested_mime.reset(); ready_text.reset();
@@ -229,7 +227,10 @@ struct PortalSession::Impl {
         const bool clip_supported = version >= 2 && property(clipboard, "version", true) >= 1;
         if (clip_supported) {
             (void)call(clipboard, "RequestClipboard", g_variant_new("(o@a{sv})", session.c_str(), options()));
-            subscriptions.push_back(g_dbus_connection_signal_subscribe(bus.get(), owner.c_str(), clipboard, nullptr, object, session.c_str(),
+            // D-Bus arg0 string rules do not match object-path-typed arguments.
+            // Pin the unique sender here, then check the exact session path in
+            // both callbacks; unrelated sessions can never alter this clipboard.
+            subscriptions.push_back(g_dbus_connection_signal_subscribe(bus.get(), owner.c_str(), clipboard, nullptr, object, nullptr,
                 G_DBUS_SIGNAL_FLAGS_NONE, [](GDBusConnection*, const gchar*, const gchar*, const gchar*, const gchar* signal, GVariant* parameters, gpointer data) {
                     auto& self = *static_cast<Impl*>(data);
                     try {
@@ -278,7 +279,7 @@ struct PortalSession::Impl {
                         input.text.append(buffer, std::size_t(n));
                     } else if (n == 0) {
                         try { require(utf16le(input.text).size() <= clipboard_quota, "clipboard text exceeds wire quota"); ready_text = std::move(input.text); }
-                        catch (const ProtocolError&) { /* Invalid local selection is not advertised remotely. */ }
+                        catch (const ProtocolError&) {}
                         incoming.reset();
                     } else if (errno == EINTR) continue;
                     else if (errno == EAGAIN || errno == EWOULDBLOCK) break;
@@ -349,8 +350,7 @@ void PortalSession::set_clipboard(std::string text) {
     impl_->local = std::make_shared<const std::string>(std::move(text));
     ++impl_->generation; impl_->incoming.reset(); impl_->ready_text.reset(); impl_->requested_mime.reset();
     const gchar* types[] = {utf8_mime, "text/plain"};
-    impl_->enqueue(clipboard, "SetSelection", g_variant_new("(o@a{sv})", impl_->session.c_str(),
-        options({{"mime_types", g_variant_new_strv(types, 2)}})));
+    impl_->enqueue(clipboard, "SetSelection", g_variant_new("(o@a{sv})", impl_->session.c_str(), options({{"mime_types", g_variant_new_strv(types, 2)}})));
 }
 std::optional<std::string> PortalSession::take_clipboard() {
     impl_->check(); auto result = std::move(impl_->ready_text); impl_->ready_text.reset(); return result;
