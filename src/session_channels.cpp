@@ -2,6 +2,7 @@
 namespace lrdp {
 void Session::static_channel(std::uint16_t channel, View payload) {
     require(channels_started_, "virtual channel data before activation");
+    if (receive_audio_static(channel, payload)) return;
     if ((!clipboard_channel_ || channel != *clipboard_channel_) && (!dynamic_channel_ || channel != *dynamic_channel_)) return;
     auto [it, unused] = assemblers_.try_emplace(channel, 1024 * 1024); (void)unused;
     auto complete = it->second.accept(payload); if (!complete) return;
@@ -12,6 +13,7 @@ void Session::static_channel(std::uint16_t channel, View payload) {
         return;
     }
     for (const auto& event : dynamic_.accept(*complete)) {
+        receive_audio_dynamic(event);
         if (event.kind == DvcEventKind::ready) {
             if (desktop_->resizable() && client_resize_) send_channel(channel, dynamic_.create(1, "Microsoft::Windows::RDS::DisplayControl"));
             if (graphics_requested_) send_channel(channel, dynamic_.create(2, "Microsoft::Windows::RDS::Graphics"));

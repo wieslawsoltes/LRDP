@@ -36,7 +36,6 @@ void Session::share_packet(View payload) {
     (void)in.le16(); const auto subtype = in.u8(), compression = in.u8(); const auto compressed = in.le16();
     require(compression == 0 && compressed == 0, "bulk compression was not negotiated");
     // MS-RDPBCGR 4.1.14 / 4.1.18 document inconsistent client uncompressedLength.
-    // The validated outer Share Control length is authoritative without compression.
     const auto body = in.take(in.remaining()); Reader data(body);
     switch (subtype) {
     case 31:
@@ -56,7 +55,9 @@ void Session::share_packet(View payload) {
         if (!channels_started_) {
             channels_started_ = true;
             if (clipboard_channel_) for (const auto& pdu : clipboard_.start()) send_channel(*clipboard_channel_, pdu);
-            if (dynamic_channel_ && ((desktop_->resizable() && client_resize_) || graphics_requested_)) send_channel(*dynamic_channel_, DynamicChannels::capabilities());
+            start_audio();
+            if (dynamic_channel_ && ((desktop_->resizable() && client_resize_) || graphics_requested_ || audio_dynamic_needed()))
+                send_channel(*dynamic_channel_, DynamicChannels::capabilities());
         }
         break;
     }
@@ -68,7 +69,8 @@ void Session::share_packet(View payload) {
     case 35: {
         const auto allow = data.u8(); require(allow <= 1, "invalid Suppress Output flag"); data.skip(3);
         if (allow) { data.skip(8); invalidate_graphics(); } data.end(); suppressed_ = !allow;
-        if (suppressed_) desktop_->release_input(); break;
+        if (suppressed_) desktop_->release_input();
+        break;
     }
     case 36: send_global(share_data(37, {})); break;
     case 43: case 3: break;

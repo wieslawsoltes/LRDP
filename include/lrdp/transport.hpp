@@ -1,11 +1,11 @@
 #pragma once
 #include "wire.hpp"
+#include "transport_queue.hpp"
+#include <array>
 #include <chrono>
-#include <deque>
 #include <memory>
 #include <optional>
 #include <openssl/ssl.h>
-
 namespace lrdp {
 class Socket {
     int fd_ = -1;
@@ -31,20 +31,24 @@ class TlsStream {
     SSL* ssl_ = nullptr;
     int fd_;
     Bytes input_;
-    std::deque<Bytes> output_;
-    std::size_t output_offset_ = 0, queued_ = 0;
-    short write_wait_ = 0;
+    std::array<std::uint8_t, 16384> read_buffer_{};
+    TransportQueue output_;
+    short write_wait_ = 0, read_wait_ = 0;
+    std::size_t retry_size_ = 0;
+    std::uint64_t written_ = 0;
     std::optional<std::chrono::steady_clock::time_point> partial_since_;
 public:
     TlsStream(int fd, TlsContext& context);
     ~TlsStream();
     TlsStream(const TlsStream&) = delete;
     TlsStream& operator=(const TlsStream&) = delete;
-    // Only the pre-RDP authentication stage may use this handle directly.
     SSL* native_tls() const noexcept { return ssl_; }
-    void enqueue(std::vector<Bytes> packets);
+    void enqueue(std::vector<Bytes> packets) { output_.enqueue(std::move(packets)); }
+    void enqueue_media(std::vector<Bytes> packets) { output_.enqueue(std::move(packets), true); }
     void pump(int timeout_ms);
     std::optional<Bytes> packet();
-    std::size_t queued() const { return queued_; }
+    std::size_t queued() const { return output_.queued(); }
+    std::size_t normal_queued() const { return output_.normal_queued(); }
+    std::uint64_t bytes_written() const { return written_; }
 };
 } // namespace lrdp

@@ -33,6 +33,7 @@ struct Configuration {
     unsigned port = 3389, fps = 30, max_sessions = 4;
     bool laboratory = false, nla = false, allow_ntlm = false, once = false, graphics = true;
     VideoOptions video;
+    AudioOptions audio;
 };
 void usage() {
     std::cout << "LRDP native Linux remote desktop server\n"
@@ -41,6 +42,7 @@ void usage() {
               << "  [--allow-ntlm] [--listen 127.0.0.1] [--port 3389] [--max-sessions 4]\n"
               << "  [--backend demo|x11|portal] [--display :0] [--fps 30] [--once]\n"
               << "  [--gfx auto|off] [--encoder auto|software|vaapi|nvenc|raw] [--device /dev/dri/renderD128]\n"
+              << "  [--audio] [--microphone]  Publish per-session virtual PipeWire devices.\n"
               << "  --allow-principal can be repeated; matching is exact and case-sensitive.\n"
               << "  Alternatively: --lab-no-auth (loopback-only, no user authentication).\n"
               << "  NLA uses system GSS credentials; desktop access runs as the server's Unix user.\n";
@@ -61,14 +63,16 @@ Configuration parse(int argc, char** argv) {
         else if (option == "--service") c.service = value();
         else if (option == "--allow-principal") { const auto name = value(); require(!name.empty() && name.size() <= 1024, "invalid principal policy"); c.principals.insert(name); }
         else if (option == "--allow-ntlm") c.allow_ntlm = true;
+        else if (option == "--audio") c.audio.playback = true;
+        else if (option == "--microphone") c.audio.microphone = true;
         else if (option == "--lab-no-auth") c.laboratory = true; else if (option == "--once") c.once = true;
         else throw ProtocolError("unknown command-line option: " + option);
     }
-    require(c.nla != c.laboratory, "select either authenticated --auth nla or explicit loopback --lab-no-auth");
+    require(c.nla != c.laboratory, "select authenticated --auth nla or explicit loopback --lab-no-auth");
     require(!c.certificate.empty() && !c.key.empty(), "TLS certificate and key are required");
     require(!c.laboratory || c.listen == "127.0.0.1" || c.listen == "::1", "unauthenticated laboratory access must remain on loopback");
-    require(!c.nla || (!c.service.empty() && !c.principals.empty()), "NLA requires a service identity and at least one allowed principal");
-    require(c.nla || (!c.allow_ntlm && c.service.empty() && c.principals.empty()), "authentication options cannot be used in laboratory mode");
+    require(!c.nla || (!c.service.empty() && !c.principals.empty()), "NLA requires a service identity and allowed principal");
+    require(c.nla || (!c.allow_ntlm && c.service.empty() && c.principals.empty()), "authentication options are invalid in laboratory mode");
     require(c.backend == "demo" || c.backend == "x11" || c.backend == "portal", "unknown desktop backend");
 #ifndef LRDP_HAVE_GSSAPI
     require(!c.nla, "this build has no system GSSAPI support");
@@ -79,10 +83,13 @@ Configuration parse(int argc, char** argv) {
 #ifndef LRDP_HAVE_PORTAL
     require(c.backend != "portal", "this build has no portal/PipeWire support");
 #endif
+#ifndef LRDP_HAVE_AUDIO
+    require(!c.audio.playback && !c.audio.microphone, "this build has no PipeWire audio support");
+#endif
     require(c.video.backend == "auto" || c.video.backend == "software" || c.video.backend == "vaapi" ||
             c.video.backend == "nvenc" || c.video.backend == "raw", "invalid video encoder");
 #ifndef LRDP_HAVE_FFMPEG
-    require(c.video.backend == "auto" || c.video.backend == "raw", "this build has no FFmpeg video support");
+    require(c.video.backend == "auto" || c.video.backend == "raw", "this build has no FFmpeg support");
 #endif
     c.video.fps = c.fps; return c;
 }
@@ -115,7 +122,6 @@ int serve(int fd, TlsContext& context, const Configuration& c, const VideoFactor
             std::cout << "NLA principal authorized: " << principal << '\n' << std::flush;
         }
 #endif
-        // Do not obtain desktop access or trigger user consent before authorization.
         std::unique_ptr<Desktop> desktop;
 #ifdef LRDP_HAVE_X11
         if (c.backend == "x11") desktop = make_x11_desktop(c.display);
@@ -126,22 +132,30 @@ int serve(int fd, TlsContext& context, const Configuration& c, const VideoFactor
         if (c.backend == "demo") desktop = make_demo_desktop();
         require(desktop != nullptr, "selected desktop backend unavailable");
         Session session(std::move(desktop), negotiation.protocols, protocol, video, c.graphics);
+#ifdef LRDP_HAVE_AUDIO
+        if (c.audio.playback || c.audio.microphone) {
+            auto devices = make_pipewire_audio(c.audio);
+            std::cout << "Audio: " << devices->description() << '\n' << std::flush;
+            session.configure_audio(std::move(devices));
+        }
+#endif
         const auto start = Clock::now(); auto next_frame = start, last_receive = start, last_progress = start;
-        std::size_t previous_queued = 0; bool announced = false; std::string graphics_status;
+        std::uint64_t previous_written = 0; bool announced = false; std::string graphics_status;
+        auto drain = [&] { stream.enqueue(session.drain()); stream.enqueue_media(session.drain_media()); };
         while (running && session.phase() != SessionPhase::closed) {
             stream.pump(10);
             while (auto packet = stream.packet()) {
                 struct Wipe { Bytes& bytes; ~Wipe() { OPENSSL_cleanse(bytes.data(), bytes.size()); } } wipe{*packet};
-                session.receive(*packet); last_receive = Clock::now(); stream.enqueue(session.drain());
+                session.receive(*packet); last_receive = Clock::now(); drain();
             }
             const auto now = Clock::now();
             if (!announced && session.active()) { std::cout << "Session active\n" << std::flush; announced = true; }
             require(announced || now - start < std::chrono::seconds(20), "session activation deadline exceeded");
             require(now - last_receive < std::chrono::minutes(30), "idle session deadline exceeded");
-            if (!stream.queued() || stream.queued() < previous_queued) last_progress = now;
-            require(now - last_progress < std::chrono::seconds(15), "peer is not draining output"); previous_queued = stream.queued();
+            if (!stream.queued() || stream.bytes_written() != previous_written) last_progress = now;
+            require(now - last_progress < std::chrono::seconds(15), "peer is not draining output"); previous_written = stream.bytes_written();
             const bool due = now >= next_frame;
-            session.tick(stream.queued() == 0, due); stream.enqueue(session.drain());
+            session.tick(stream.normal_queued() == 0, due); drain();
             if (due) next_frame = now + std::chrono::microseconds(1000000 / c.fps);
             if (graphics_status != session.graphics_status()) {
                 graphics_status = session.graphics_status(); std::cout << "Graphics: " << graphics_status << '\n' << std::flush;
@@ -173,7 +187,6 @@ int main(int argc, char** argv) {
             if (children.size() >= c.max_sessions) continue;
             int yes = 1; setsockopt(peer.get(), IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
             if (c.once) return serve(peer.get(), context, c, video);
-            // Fork before opening GSS/desktop/encoder resources or creating any worker.
             const auto child = fork();
             if (child == 0) { close(listener.get()); const auto result = serve(peer.get(), context, c, video); std::cout.flush(); std::cerr.flush(); _exit(result); }
             require(child > 0, "cannot create isolated session process"); children.insert(child);

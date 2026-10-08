@@ -18,7 +18,7 @@ jobs:
       - name: Install native development dependencies
         run: |
           sudo apt-get update > /tmp/lrdp-apt.log 2>&1 || { tail -100 /tmp/lrdp-apt.log; exit 1; }
-          sudo apt-get install -y cmake ninja-build g++ pkg-config libssl-dev libkrb5-dev gss-ntlmssp libx11-dev libxtst-dev libxfixes-dev libxrandr-dev libglib2.0-dev libpipewire-0.3-dev libavcodec-dev libavutil-dev libswscale-dev xvfb ffmpeg python3 freerdp2-x11 dbus-daemon >> /tmp/lrdp-apt.log 2>&1 || { tail -100 /tmp/lrdp-apt.log; exit 1; }
+          sudo apt-get install -y cmake ninja-build g++ pkg-config libssl-dev libkrb5-dev gss-ntlmssp libx11-dev libxtst-dev libxfixes-dev libxrandr-dev libglib2.0-dev libpipewire-0.3-dev libavcodec-dev libavutil-dev libswscale-dev xvfb ffmpeg python3 freerdp2-x11 dbus-daemon pipewire-bin >> /tmp/lrdp-apt.log 2>&1 || { tail -100 /tmp/lrdp-apt.log; exit 1; }
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DLRDP_SANITIZE=ON -DLRDP_TEST_NTLM=ON
       - name: Build
@@ -29,3 +29,8 @@ jobs:
         run: cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
       - name: Build optimized executable
         run: cmake --build build-release --parallel 2
+      - name: Verify protocol-only configuration
+        run: |
+          cmake -S . -B build-core -G Ninja -DLRDP_BUILD_SERVER=OFF -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-core --parallel 2
+          ctest --test-dir build-core --output-on-failure
