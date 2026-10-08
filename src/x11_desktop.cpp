@@ -1,5 +1,7 @@
 #include "lrdp/desktop.hpp"
+#include "lrdp/clipboard/file_uri.hpp"
 #include "lrdp/platform/x11_managed.hpp"
+#include "lrdp/platform/x11_pointer.hpp"
 #include "lrdp/platform/shared_library.hpp"
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
@@ -82,9 +84,14 @@ class X11Desktop final : public Desktop {
     MotionFunction motion_ = xtest_.symbol<MotionFunction>("XTestFakeMotionEvent");
     Window root_ = 0, window_ = 0;
     Atom clipboard_ = 0, utf8_ = 0, targets_ = 0, timestamp_ = 0, property_ = 0, incr_ = 0, clock_ = 0;
+    Atom uri_ = 0, copied_files_ = 0;
+    bool files_enabled_ = false, owns_files_ = false;
+    std::shared_ptr<const std::string> owned_uris_, owned_copied_;
+    std::optional<std::vector<std::string>> ready_files_;
     int screen_ = 0, selection_event_ = 0;
     Layout layout_;
     X11Resize resize_;
+    std::unique_ptr<X11Pointer> pointer_;
     std::set<unsigned> pressed_keys_, pressed_buttons_;
     int wheel_ = 0, horizontal_wheel_ = 0;
     Time ownership_time_ = 0;
@@ -94,6 +101,7 @@ class X11Desktop final : public Desktop {
     std::uint64_t selection_generation_ = 0;
     struct Incoming {
         Window window = 0, owner = 0;
+        Atom target = 0;
         std::uint64_t generation = 0;
         bool incremental = false;
         Bytes bytes;
@@ -103,6 +111,7 @@ class X11Desktop final : public Desktop {
     struct Outgoing {
         Window window;
         Atom property;
+        Atom target;
         std::shared_ptr<const std::string> text;
         std::size_t offset = 0;
         Clock::time_point deadline;
@@ -115,7 +124,7 @@ class X11Desktop final : public Desktop {
         if (incoming_) { XDestroyWindow(d(), incoming_->window); incoming_.reset(); }
     }
     void fetch_selection(Window owner) {
-        ++selection_generation_; cancel_incoming(); ready_text_.reset();
+        ++selection_generation_; cancel_incoming(); ready_text_.reset(); ready_files_.reset();
         if (owner == window_ || owner == None) return;
         // A fresh requestor window is a bounded correlation token. Late events from
         // an old owner cannot complete a newer clipboard conversion.
@@ -123,7 +132,8 @@ class X11Desktop final : public Desktop {
         next.window = XCreateSimpleWindow(d(), root_, 0, 0, 1, 1, 0, 0, 0);
         next.owner = owner; next.generation = selection_generation_; next.deadline = Clock::now() + std::chrono::seconds(5);
         XSelectInput(d(), next.window, PropertyChangeMask);
-        XConvertSelection(d(), clipboard_, utf8_, property_, next.window, CurrentTime);
+        next.target = files_enabled_ ? targets_ : utf8_;
+        XConvertSelection(d(), clipboard_, next.target, property_, next.window, CurrentTime);
         incoming_ = std::move(next); XFlush(d());
     }
     void complete_selection() {
@@ -131,10 +141,16 @@ class X11Desktop final : public Desktop {
             std::string text(incoming_->bytes.begin(), incoming_->bytes.end());
             try {
                 require(utf16le(text).size() <= clipboard_limit, "X11 clipboard exceeds text policy");
-                ready_text_ = std::move(text);
+                if (incoming_->target == uri_ || incoming_->target == copied_files_)
+                    ready_files_ = decode_file_uris(text, incoming_->target == copied_files_);
+                else ready_text_ = std::move(text);
             } catch (const ProtocolError&) { /* Invalid local text is not sent to the client. */ }
         }
         cancel_incoming();
+    }
+    void convert_target(Atom target) {
+        incoming_->target = target;
+        XConvertSelection(d(), clipboard_, target, property_, incoming_->window, CurrentTime); XFlush(d());
     }
     void read_selection(bool notification) {
         if (!incoming_) return;
@@ -143,14 +159,27 @@ class X11Desktop final : public Desktop {
                                               AnyPropertyType, &type, &format, &count, &after, &raw);
         XMemory memory(raw);
         if (status != Success || after != 0) { cancel_incoming(); return; }
+        if (incoming_->target == targets_) {
+            if (type != XA_ATOM || format != 32 || count > 256 || (!raw && count)) { cancel_incoming(); return; }
+            const auto* atoms = reinterpret_cast<const unsigned long*>(raw);
+            bool uris = false, copied = false, text = false;
+            for (unsigned long i = 0; i < count; ++i) { uris |= atoms[i] == uri_; copied |= atoms[i] == copied_files_; text |= atoms[i] == utf8_; }
+            if (uris || copied || text) convert_target(uris ? uri_ : copied ? copied_files_ : utf8_);
+            else cancel_incoming();
+            return;
+        }
         if (notification && type == incr_) {
             if (format != 32 || count != 1 || *reinterpret_cast<unsigned long*>(raw) > clipboard_limit) { cancel_incoming(); return; }
             incoming_->incremental = true; XDeleteProperty(d(), incoming_->window, property_); XFlush(d()); return;
         }
-        if (type != utf8_ || format != 8 || count > clipboard_limit - incoming_->bytes.size()) { cancel_incoming(); return; }
+        if (type != incoming_->target || format != 8 || count > clipboard_limit - incoming_->bytes.size()) { cancel_incoming(); return; }
         if (count) incoming_->bytes.insert(incoming_->bytes.end(), raw, raw + count);
         if (!incoming_->incremental || count == 0) complete_selection();
         XFlush(d());
+    }
+    std::shared_ptr<const std::string> selection_payload(Atom target) const {
+        if (owns_files_) return target == uri_ ? owned_uris_ : target == copied_files_ ? owned_copied_ : nullptr;
+        return target == utf8_ ? owned_text_ : nullptr;
     }
     void selection_request(const XSelectionRequestEvent& request) {
         XEvent reply{}; reply.xselection.type = SelectionNotify; reply.xselection.display = d();
@@ -162,24 +191,25 @@ class X11Desktop final : public Desktop {
         const bool timely = request.time == CurrentTime || std::bit_cast<std::int32_t>(std::uint32_t(request.time - ownership_time_)) >= 0;
         if (request.selection == clipboard_ && XGetSelectionOwner(d(), clipboard_) == window_ && timely) {
             if (request.target == targets_) {
-                const Atom values[] = {targets_, timestamp_, utf8_};
+                std::vector<Atom> values = {targets_, timestamp_};
+                if (owns_files_) { values.push_back(uri_); values.push_back(copied_files_); } else values.push_back(utf8_);
                 XChangeProperty(d(), request.requestor, property, XA_ATOM, 32, PropModeReplace,
-                                reinterpret_cast<const unsigned char*>(values), 3); accepted = true;
+                                reinterpret_cast<const unsigned char*>(values.data()), int(values.size())); accepted = true;
             } else if (request.target == timestamp_) {
                 const unsigned long time = ownership_time_;
                 XChangeProperty(d(), request.requestor, property, XA_INTEGER, 32, PropModeReplace,
                                 reinterpret_cast<const unsigned char*>(&time), 1); accepted = true;
-            } else if (request.target == utf8_) {
-                if (owned_text_->size() <= chunk_size) {
-                    XChangeProperty(d(), request.requestor, property, utf8_, 8, PropModeReplace,
-                                    reinterpret_cast<const unsigned char*>(owned_text_->data()), int(owned_text_->size())); accepted = true;
+            } else if (auto payload = selection_payload(request.target)) {
+                if (payload->size() <= chunk_size) {
+                    XChangeProperty(d(), request.requestor, property, request.target, 8, PropModeReplace,
+                                    reinterpret_cast<const unsigned char*>(payload->data()), int(payload->size())); accepted = true;
                 } else if (outgoing_.size() < 8 && !outgoing_.contains({request.requestor, property})) {
-                    const unsigned long length = owned_text_->size();
+                    const unsigned long length = payload->size();
                     XSelectInput(d(), request.requestor, PropertyChangeMask | StructureNotifyMask);
                     XChangeProperty(d(), request.requestor, property, incr_, 32, PropModeReplace,
                                     reinterpret_cast<const unsigned char*>(&length), 1);
                     outgoing_.emplace(std::make_pair(request.requestor, property),
-                        Outgoing{request.requestor, property, owned_text_, 0, Clock::now() + std::chrono::seconds(5)});
+                        Outgoing{request.requestor, property, request.target, payload, 0, Clock::now() + std::chrono::seconds(5)});
                     accepted = true;
                 }
             }
@@ -191,7 +221,7 @@ class X11Desktop final : public Desktop {
         auto it = outgoing_.find({window, property}); if (it == outgoing_.end()) return;
         auto& transfer = it->second;
         const auto length = std::min(chunk_size, transfer.text->size() - transfer.offset);
-        XChangeProperty(d(), window, property, utf8_, 8, PropModeReplace,
+        XChangeProperty(d(), window, property, transfer.target, 8, PropModeReplace,
                         reinterpret_cast<const unsigned char*>(transfer.text->data() + transfer.offset), int(length));
         transfer.offset += length;
         if (length == 0) outgoing_.erase(it);
@@ -201,13 +231,16 @@ class X11Desktop final : public Desktop {
         // Bound each event-loop turn even if another local client floods X events.
         for (unsigned n = 0; n < 512 && XPending(d()); ++n) {
             XEvent event{}; XNextEvent(d(), &event);
+            if (pointer_) pointer_->event(event.type);
             if (event.type == selection_event_) {
                 SelectionChange changed{}; static_assert(sizeof(changed) <= sizeof(event));
                 std::memcpy(&changed, &event, sizeof(changed));
                 if (changed.selection == clipboard_) fetch_selection(changed.owner);
             } else if (event.type == SelectionRequest) selection_request(event.xselectionrequest);
             else if (event.type == SelectionNotify && incoming_ && event.xselection.requestor == incoming_->window) {
-                if (event.xselection.selection != clipboard_ || event.xselection.target != utf8_ || event.xselection.property != property_) cancel_incoming();
+                if (event.xselection.selection != clipboard_ || event.xselection.target != incoming_->target) cancel_incoming();
+                else if (event.xselection.property == None && incoming_->target == targets_) convert_target(utf8_);
+                else if (event.xselection.property != property_) cancel_incoming();
                 else read_selection(true);
             } else if (event.type == PropertyNotify) {
                 const auto& p = event.xproperty;
@@ -249,9 +282,11 @@ public:
         window_ = XCreateSimpleWindow(d(), root_, 0, 0, 1, 1, 0, 0, 0);
         XSelectInput(d(), window_, PropertyChangeMask);
         clipboard_ = atom("CLIPBOARD"); utf8_ = atom("UTF8_STRING"); targets_ = atom("TARGETS"); timestamp_ = atom("TIMESTAMP");
+        uri_ = atom("text/uri-list"); copied_files_ = atom("x-special/gnome-copied-files");
         property_ = atom("_LRDP_CLIPBOARD"); clock_ = atom("_LRDP_CLOCK"); incr_ = atom("INCR");
         auto select = xfixes_.symbol<void (*)(Display*, Window, Atom, unsigned long)>("XFixesSelectSelectionInput");
         select(d(), window_, clipboard_, 7);
+        pointer_ = std::make_unique<X11Pointer>(d());
         fetch_selection(XGetSelectionOwner(d(), clipboard_));
         require(errors_.sync(d()), "failed to initialize X11 desktop resources");
     }
@@ -259,6 +294,7 @@ public:
         release_input(); cancel_incoming();
         if (window_) XDestroyWindow(d(), window_);
         XSync(d(), False);
+        pointer_.reset();
         display_.reset();
     }
     Layout layout() const override { return layout_; }
@@ -271,6 +307,7 @@ public:
         if (!resize_(d(), next)) return false;
         layout_ = std::move(next); return true;
     }
+    std::shared_ptr<const PointerShape> pointer_shape() override { return pointer_->current(); }
     Frame capture() override {
         events();
         XWindowAttributes attributes{};
@@ -337,9 +374,24 @@ public:
         }
         XFlush(d());
     }
+    bool enable_file_clipboard() override {
+        files_enabled_ = true; fetch_selection(XGetSelectionOwner(d(), clipboard_)); return true;
+    }
+    void set_clipboard_files(std::vector<std::string> paths) override {
+        require(files_enabled_, "X11 file clipboard is disabled");
+        auto uris = std::make_shared<const std::string>(encode_file_uris(paths));
+        auto copied = std::make_shared<const std::string>(encode_file_uris(paths, true));
+        owned_uris_ = std::move(uris); owned_copied_ = std::move(copied); owns_files_ = true;
+        ready_files_.reset(); ready_text_.reset(); cancel_incoming(); claiming_ = true;
+        XChangeProperty(d(), window_, clock_, XA_INTEGER, 8, PropModeAppend, nullptr, 0); XFlush(d());
+    }
+    std::optional<std::vector<std::string>> poll_clipboard_files() override {
+        events(); auto result = std::move(ready_files_); ready_files_.reset(); return result;
+    }
     void set_clipboard(std::string text) override {
         require(text.size() <= clipboard_limit && utf16le(text).size() <= clipboard_limit, "X11 clipboard exceeds policy");
         owned_text_ = std::make_shared<const std::string>(std::move(text));
+        owns_files_ = false; owned_uris_.reset(); owned_copied_.reset(); ready_files_.reset();
         ready_text_.reset(); cancel_incoming(); claiming_ = true;
         XChangeProperty(d(), window_, clock_, XA_INTEGER, 8, PropModeAppend, nullptr, 0); XFlush(d());
     }

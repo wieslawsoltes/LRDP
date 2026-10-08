@@ -29,8 +29,12 @@ public:
     Layout layout() const override { return native_->layout(); }
     bool resizable() const override { return true; }
     bool resize(const Layout& layout) override { server_.check(); return native_->resize(layout); }
+    std::shared_ptr<const PointerShape> pointer_shape() override { return native_->pointer_shape(); }
     Frame capture() override { server_.check(); return native_->capture(); }
     void input(const InputEvent& event) override { native_->input(event); }
+    bool enable_file_clipboard() override { return native_->enable_file_clipboard(); }
+    void set_clipboard_files(std::vector<std::string> paths) override { native_->set_clipboard_files(std::move(paths)); }
+    std::optional<std::vector<std::string>> poll_clipboard_files() override { return native_->poll_clipboard_files(); }
     void set_clipboard(std::string text) override { native_->set_clipboard(std::move(text)); }
     std::optional<std::string> poll_clipboard() override { return native_->poll_clipboard(); }
     void release_input() override { native_->release_input(); }

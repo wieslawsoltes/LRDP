@@ -1,5 +1,6 @@
 #include "lrdp/session.hpp"
 #include "lrdp/transport.hpp"
+#include "lrdp/platform/clipboard_file_store.hpp"
 #ifdef LRDP_HAVE_HEADLESS
 #include "lrdp/platform/headless_desktop.hpp"
 #endif
@@ -37,6 +38,8 @@ struct Configuration {
     bool laboratory = false, nla = false, allow_ntlm = false, once = false, graphics = true;
     VideoOptions video;
     AudioOptions audio;
+    std::string clipboard_root;
+    FileClipboardLimits clipboard_limits;
 #ifdef LRDP_HAVE_HEADLESS
     HeadlessOptions headless;
 #endif
@@ -50,6 +53,7 @@ void usage() {
               << "  [--gfx auto|off] [--encoder auto|software|vaapi|nvenc|raw] [--device /dev/dri/renderD128]\n"
               << "  [--desktop-command /absolute/executable] [--desktop-arg ARG] [--xorg-executable /absolute/Xorg]\n"
               << "  [--audio] [--microphone]  Publish per-session virtual PipeWire devices.\n"
+              << "  [--clipboard-files DIRECTORY] [--clipboard-max-mib 256] (x11/headless; private staging)\n"
               << "  --allow-principal can be repeated; matching is exact and case-sensitive.\n"
               << "  Alternatively: --lab-no-auth (loopback-only, no user authentication).\n"
               << "  NLA uses system GSS credentials; desktop access runs as the server's Unix user.\n";
@@ -75,6 +79,8 @@ Configuration parse(int argc, char** argv) {
         else if (option == "--service") c.service = value();
         else if (option == "--allow-principal") { const auto name = value(); require(!name.empty() && name.size() <= 1024, "invalid principal policy"); c.principals.insert(name); }
         else if (option == "--allow-ntlm") c.allow_ntlm = true;
+        else if (option == "--clipboard-files") c.clipboard_root = value();
+        else if (option == "--clipboard-max-mib") c.clipboard_limits.bytes = std::uint64_t(number(value(), 1024))*1024*1024;
         else if (option == "--audio") c.audio.playback = true;
         else if (option == "--microphone") c.audio.microphone = true;
         else if (option == "--lab-no-auth") c.laboratory = true; else if (option == "--once") c.once = true;
@@ -106,6 +112,7 @@ Configuration parse(int argc, char** argv) {
 #ifndef LRDP_HAVE_FFMPEG
     require(c.video.backend == "auto" || c.video.backend == "raw", "this build has no FFmpeg support");
 #endif
+    require(c.clipboard_root.empty() || c.backend == "x11" || c.backend == "headless", "file clipboard requires the x11 or headless backend");
     c.video.fps = c.fps; return c;
 }
 int bind_listener(const Configuration& c) {
@@ -150,6 +157,7 @@ int serve(int fd, TlsContext& context, const Configuration& c, const VideoFactor
         if (c.backend == "demo") desktop = make_demo_desktop();
         require(desktop != nullptr, "selected desktop backend unavailable");
         Session session(std::move(desktop), negotiation.protocols, protocol, video, c.graphics);
+        if (!c.clipboard_root.empty()) session.configure_file_clipboard(make_clipboard_file_store(c.clipboard_root, c.clipboard_limits), c.clipboard_limits);
 #ifdef LRDP_HAVE_AUDIO
         if (c.audio.playback || c.audio.microphone) {
             auto devices = make_pipewire_audio(c.audio);
@@ -158,7 +166,7 @@ int serve(int fd, TlsContext& context, const Configuration& c, const VideoFactor
         }
 #endif
         const auto start = Clock::now(); auto next_frame = start, last_receive = start, last_progress = start;
-        std::uint64_t previous_written = 0; bool announced = false; std::string graphics_status;
+        std::uint64_t previous_written = 0; bool announced = false; std::string graphics_status, clipboard_status;
         auto drain = [&] { stream.enqueue(session.drain()); stream.enqueue_media(session.drain_media()); };
         while (running && session.phase() != SessionPhase::closed) {
             stream.pump(10);
@@ -175,6 +183,9 @@ int serve(int fd, TlsContext& context, const Configuration& c, const VideoFactor
             const bool due = now >= next_frame;
             session.tick(stream.normal_queued() == 0, due); drain();
             if (due) next_frame = now + std::chrono::microseconds(1000000 / c.fps);
+            if (clipboard_status != session.clipboard_status()) {
+                clipboard_status = session.clipboard_status(); std::cout << "Clipboard: " << clipboard_status << '\n' << std::flush;
+            }
             if (graphics_status != session.graphics_status()) {
                 graphics_status = session.graphics_status(); std::cout << "Graphics: " << graphics_status << '\n' << std::flush;
             }

@@ -118,8 +118,18 @@ void transfers() {
     check(!receiver.take_completed(),"late completion cannot publish cancelled transfer");
     Writer unsolicited; unsolicited.le32(0xffffffff); rejects([&]{receiver.accept(9,1,unsolicited.bytes());});
     receiver.begin_remote(); (void)receiver.drain(); receiver.list(sender.file_list());
-    auto reads=receiver.drain(); Reader read(View(reads[0]).subspan(8)); Writer short_read; short_read.le32(read.le32()).u8(0);
-    receiver.accept(9,1,short_read.bytes()); check(receiver.take_error().has_value() && b->received->aborted==1,"short response aborts");
+    auto reads=receiver.drain(); Reader read(View(reads[0]).subspan(8)); Writer short_read; short_read.le32(read.le32());
+    receiver.accept(9,1,short_read.bytes()); check(receiver.take_error().has_value() && b->received->aborted==1,"premature EOF aborts");
+    // A legal short RANGE is retried at the next offset, without overlapping writes.
+    FileClipboardLimits narrow; narrow.chunk = 11000;
+    ClipboardFiles small_sender(a, narrow), small_receiver(b);
+    small_sender.negotiate(4); small_receiver.negotiate(4); small_sender.publish(small_sender.offer({"/test"}));
+    small_receiver.begin_remote(); small_receiver.list(small_sender.file_list());
+    for (unsigned turn = 0; turn < 100 && !b->received->finished; ++turn) {
+        for (const auto& p : small_receiver.drain()) deliver(small_sender, p);
+        for (const auto& p : small_sender.drain()) deliver(small_receiver, p);
+    }
+    check(b->received->finished && b->received->bytes == a->source->bytes, "short ranges resume without holes");
     receiver.begin_remote(); receiver.tick(std::chrono::steady_clock::now()+std::chrono::seconds(31));
     check(receiver.take_error().has_value() && !receiver.awaiting_list(),"metadata timeout unlocks");
 }

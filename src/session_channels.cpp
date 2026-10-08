@@ -7,9 +7,7 @@ void Session::static_channel(std::uint16_t channel, View payload) {
     auto [it, unused] = assemblers_.try_emplace(channel, 1024 * 1024); (void)unused;
     auto complete = it->second.accept(payload); if (!complete) return;
     if (clipboard_channel_ && channel == *clipboard_channel_) {
-        auto result = clipboard_.accept(*complete);
-        for (const auto& pdu : result.outbound) send_channel(channel, pdu);
-        if (result.remote_text) desktop_->set_clipboard(std::move(*result.remote_text));
+        apply_clipboard(clipboard_.accept(*complete));
         return;
     }
     for (const auto& event : dynamic_.accept(*complete)) {

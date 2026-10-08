@@ -15,8 +15,8 @@ endif()
 find_package(Threads REQUIRED)
 add_library(lrdp_protocol src/wire.cpp src/channels.cpp src/clipboard.cpp src/display.cpp
   src/mcs.cpp src/capabilities.cpp src/monitor_layout.cpp src/desktop.cpp src/session.cpp src/session_updates.cpp src/session_input.cpp
-  src/session_channels.cpp src/session_graphics.cpp src/session_audio.cpp src/graphics.cpp
-  src/pointer.cpp src/clipboard_file_wire.cpp src/clipboard_file_transfer.cpp src/video_worker.cpp src/audio_format.cpp src/audio_output.cpp src/audio_input.cpp)
+  src/session_channels.cpp src/session_clipboard.cpp src/session_graphics.cpp src/session_audio.cpp src/graphics.cpp
+  src/pointer.cpp src/clipboard_file_wire.cpp src/clipboard_file_uri.cpp src/clipboard_file_transfer.cpp src/video_worker.cpp src/audio_format.cpp src/audio_output.cpp src/audio_input.cpp)
 target_include_directories(lrdp_protocol PUBLIC include)
 target_link_libraries(lrdp_protocol PUBLIC Threads::Threads)
 target_compile_options(lrdp_protocol PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
@@ -104,6 +104,7 @@ if(LRDP_BUILD_SERVER)
       endif()
     endif()
   endif()
+  include(cmake/LrdpFileClipboard.cmake)
   include(cmake/LrdpHeadless.cmake)
   include(cmake/LrdpExtensions.cmake)
 endif()

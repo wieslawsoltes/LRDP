@@ -88,10 +88,16 @@ void ClipboardFiles::response(std::uint16_t flags, View payload) {
     const auto read = it->second; pending_.erase(it);
     if (flags != 1) { fail("remote clipboard file read failed"); return; }
     try {
-        require(in.remaining() == read.count, "short or oversized clipboard file response");
         if (read.size) {
+            require(in.remaining() == 8, "invalid clipboard file size response");
             const auto low = in.le32(); incoming_[read.index].size = std::uint64_t(in.le32()) << 32 | low;
-        } else sink_->write(read.index, read.offset, in.take(read.count));
+        } else {
+            const auto count = std::uint32_t(in.remaining());
+            require(count > 0 && count <= read.count, "premature EOF or oversized clipboard file response");
+            sink_->write(read.index, read.offset, in.take(count));
+            // RANGE specifies a maximum, not a mandatory exact response size.
+            if (count < read.count) request({read.index, read.offset + count, read.count - count, false});
+        }
         deadline_ = Clock::now() + std::chrono::seconds(30); advance();
     } catch (const ProtocolError& e) { fail(e.what()); }
 }
