@@ -25,13 +25,16 @@ class Session {
     std::optional<std::uint16_t> clipboard_channel_, dynamic_channel_, sound_channel_;
     std::optional<DisplayController> display_;
     BitmapEncoder bitmap_;
+    PointerEncoder pointer_;
     Graphics graphics_;
     VideoFactory video_factory_;
     std::unique_ptr<VideoWorker> video_;
     Frame previous_graphics_;
     std::uint64_t graphics_generation_ = 0;
     bool graphics_enabled_ = true, graphics_requested_ = false, graphics_reset_ = false;
-    std::string graphics_status_;
+    std::string graphics_status_, clipboard_status_;
+    void apply_clipboard(ClipboardResult result);
+    void tick_clipboard();
     bool channels_started_ = false, suppressed_ = false;
     bool synchronized_ = false, control_granted_ = false, client_resize_ = false;
     std::unique_ptr<AudioDevices> audio_;
@@ -63,6 +66,8 @@ public:
                      std::uint32_t selected_protocol = 1, VideoFactory video = {}, bool graphics = true);
     ~Session();
     void configure_audio(std::unique_ptr<AudioDevices> devices);
+    void configure_file_clipboard(std::shared_ptr<ClipboardFileStore> store, FileClipboardLimits limits = {});
+    const std::string& clipboard_status() const { return clipboard_status_; }
     void receive(View packet);
     void tick(bool graphics_ready = true, bool capture_due = true);
     const std::string& graphics_status() const { return graphics_status_; }

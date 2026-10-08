@@ -40,15 +40,22 @@ def clip(kind: int, flags: int, body: bytes = b'') -> bytes:
 
 def static(body: bytes) -> bytes: return u32(len(body)) + u32(3) + body
 
-def client_connect(width: int = 640, height: int = 480, gfx: bool = False) -> bytes:
+def client_connect(width: int = 640, height: int = 480, gfx: bool = False, monitors=(), monitor_attributes=()) -> bytes:
     core = struct.pack('<IHHHHII', 0x80004, width, height, 0xca01, 0xaa03, 0x409, 22631)
     core += 'LRDP-fixture'.encode('utf-16-le').ljust(32, b'\x00')
     core += struct.pack('<III', 4, 0, 12) + bytes(64)
-    core += struct.pack('<HHIHHH', 0xca04, 1, 0, 24, 0x0f, 0x100 if gfx else 0) + bytes(64) + bytes([6, 0]) + u32(1)
+    core += struct.pack('<HHIHHH', 0xca04, 1, 0, 24, 0x0f, (0x100 if gfx else 0) | (0x40 if monitors else 0)) + bytes(64) + bytes([6, 0]) + u32(1)
     assert len(core) == 212
     def block(kind: int, body: bytes) -> bytes: return u16(kind) + u16(len(body) + 4) + body
     channels = u32(2) + b'cliprdr\x00' + u32(0x80800000) + b'drdynvc\x00' + u32(0x80800000)
     blocks = block(0xc001, core) + block(0xc002, u32(0) + u32(0)) + block(0xc003, channels)
+    if monitor_attributes:
+        # Extended blocks may precede the definitions they augment.
+        attrs = b''.join(struct.pack('<5I',*a) for a in monitor_attributes)
+        blocks += block(0xc008,u32(0)+u32(20)+u32(len(monitor_attributes))+attrs)
+    if monitors:
+        defs = b''.join(struct.pack('<iiiiI',*m) for m in monitors)
+        blocks += block(0xc005,u32(0)+u32(len(monitors))+defs)
     conference = b'\x00\x08\x00\x10\x00\x01\xc0\x00Duca' + per(len(blocks)) + blocks
     gcc = b'\x00\x05\x00\x14\x7c\x00\x01' + per(len(conference)) + conference
     params = ber(b'\x30', b''.join(integer(x) for x in (34, 2, 0, 1, 0, 1, 65535, 2)))
@@ -63,10 +70,10 @@ class Client:
         request = tpkt(b'\x0e\xe0\x00\x00\x00\x00\x00\x01\x00\x08\x00' + u32(1))
         raw.sendall(request[:2]); raw.sendall(request[2:])
         self.stream = raw
-        assert self.recv_packet() == tpkt(b'\x0e\xd0\x00\x00\x00\x00\x00\x02\x00\x08\x00' + u32(1))
+        assert self.recv_packet() == tpkt(b'\x0e\xd0\x00\x00\x00\x00\x00\x02\x01\x08\x00' + u32(1))
         context = ssl.create_default_context(cafile=str(cert))
         self.stream = context.wrap_socket(raw, server_hostname='localhost')
-        self.partials: dict[int, tuple[int, bytearray]] = {}
+        self.partials: dict[int, tuple[int, bytes]] = {}
         self.events: list[tuple[int, bytes]] = []
         self.bitmap_count = 0
         self.pixels = bytearray(640 * 480 * 3)
@@ -117,7 +124,7 @@ class Client:
                 assert body == bytes.fromhex('80000000ff031000070000000200000004000000')
                 self.events.append((0x80, body)); return
             size, kind, source = struct.unpack('<HHH', body[:6])
-            assert size == len(body) and source == 1002
+            assert size == len(body) and source == (0 if kind == 0x17 and body[14] == 55 else 1002)
             if kind == 0x11: self.demand = body; return
             if kind == 0x16: self.events.append((6, body)); return
             assert kind == 0x17 and struct.unpack_from('<I', body, 6)[0] == 0x103ea
@@ -200,7 +207,7 @@ class Client:
         self.until(lambda: self.font_map)
 
     def connect(self) -> None:
-        self.stream.sendall(client_connect(gfx=getattr(self, 'use_gfx', False)))
+        self.stream.sendall(client_connect(gfx=getattr(self, 'use_gfx', False), monitors=getattr(self, 'initial_monitors', ()), monitor_attributes=getattr(self, 'initial_attributes', ())))
         response = self.recv_packet()
         assert response[7:9] == b'\x7f\x66' and b'McDn' in response
         self.stream.sendall(x224(b'\x04\x01\x00\x01\x00') + x224(b'\x28'))

@@ -6,13 +6,14 @@ void Session::tick(bool transport_ready, bool capture_due) {
     desktop_->pump();
     if (!active()) return;
     tick_audio(); // Audio continues while graphics are suppressed or backpressured.
-    if (clipboard_channel_) if (auto text = desktop_->poll_clipboard())
-        for (const auto& pdu : clipboard_.set_local(std::move(*text))) send_channel(*clipboard_channel_, pdu);
+    tick_clipboard();
     if (!transport_ready) return;
     const auto actual = desktop_->layout();
     if (actual.monitors != active_layout_.monitors) { display_.emplace(actual); reactivate(); return; }
     if (display_ && display_->commit([&](const Layout& layout) { return desktop_->resize(layout); })) { reactivate(); return; }
     if (suppressed_) return;
+    if (!desktop_->embedded_cursor()) if (const auto shape = desktop_->pointer_shape())
+        if (auto update = pointer_.update(*shape)) send_global(share_data(27, *update));
     if (graphics_requested_ && graphics_.ready()) {
         if (graphics_reset_) { graphics_.reset(active_layout_); graphics_reset_ = false; flush_graphics(); }
         if (!graphics_.can_send()) return;

@@ -81,5 +81,5 @@ struct NegotiationRequest {
 };
 [[nodiscard]] NegotiationRequest parse_negotiation(View packet);
 [[nodiscard]] Bytes negotiation_reply(std::uint32_t protocol_or_error, bool failure = false,
-                                     std::uint8_t flags = 0);
+                                     std::uint8_t flags = 1); // EXTENDED_CLIENT_DATA_SUPPORTED
 } // namespace lrdp

@@ -1,5 +1,6 @@
 #pragma once
 #include "display.hpp"
+#include "pointer.hpp"
 #include <memory>
 
 namespace lrdp {
@@ -20,6 +21,10 @@ public:
     virtual bool unicode_input() const { return false; }
     virtual bool clipboard_available() const { return true; }
     virtual bool embedded_cursor() const { return false; }
+    virtual bool enable_file_clipboard() { return false; }
+    virtual std::optional<std::vector<std::string>> poll_clipboard_files() { return {}; }
+    virtual void set_clipboard_files(std::vector<std::string>) { throw ProtocolError("backend has no file clipboard"); }
+    virtual std::shared_ptr<const PointerShape> pointer_shape() { return {}; }
     virtual bool resize(const Layout&) = 0;
     virtual Frame capture() = 0;
     virtual void input(const InputEvent&) = 0;

@@ -1,4 +1,5 @@
 #include "lrdp/session.hpp"
+#include "lrdp/monitor_layout.hpp"
 #include <algorithm>
 
 namespace lrdp {
@@ -30,6 +31,7 @@ void Session::activate() {
     require(active_layout_.width <= 65535 && active_layout_.height <= 65535, "desktop exceeds basic RDP bounds");
     send_global(demand_active(std::uint16_t(active_layout_.width), std::uint16_t(active_layout_.height), settings_.depth,
                               desktop_->resizable(), desktop_->unicode_input()));
+    if (settings_.early_caps & 0x40) send_global(monitor_layout_pdu(active_layout_));
     synchronized_ = control_granted_ = false; phase_ = SessionPhase::confirm;
 }
 void Session::reactivate() {
@@ -44,7 +46,8 @@ void Session::receive(View packet) {
         graphics_requested_ = graphics_enabled_ && (settings_.early_caps & 0x100);
         if (desktop_->resizable()) {
             Monitor monitor; monitor.width = (settings_.width + 1U) & ~1U; monitor.height = settings_.height;
-            require(desktop_->resize(validate_layout({monitor})), "initial resize rejected by backend");
+            const auto initial = settings_.monitors ? *settings_.monitors : validate_layout({monitor});
+            require(desktop_->resize(initial), "initial resize rejected by backend");
         }
         display_.emplace(desktop_->layout());
         if (auto it = settings_.channels.find("cliprdr"); it != settings_.channels.end() && desktop_->clipboard_available()) clipboard_channel_ = it->second;

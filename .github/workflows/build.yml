@@ -15,16 +15,26 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Package exact source revision
+        run: |
+          mkdir -p artifacts
+          git archive --format=tar.gz --prefix=LRDP/ HEAD > artifacts/lrdp-source.tar.gz
+          git rev-parse HEAD > artifacts/revision.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lrdp-source
+          path: artifacts/
+          retention-days: 7
       - name: Install native development dependencies
         run: |
           sudo apt-get update > /tmp/lrdp-apt.log 2>&1 || { tail -100 /tmp/lrdp-apt.log; exit 1; }
-          sudo apt-get install -y cmake ninja-build g++ pkg-config libssl-dev libkrb5-dev gss-ntlmssp libx11-dev libxtst-dev libxfixes-dev libxrandr-dev libglib2.0-dev libpipewire-0.3-dev libavcodec-dev libavutil-dev libswscale-dev xvfb ffmpeg python3 freerdp2-x11 dbus-daemon pipewire-bin >> /tmp/lrdp-apt.log 2>&1 || { tail -100 /tmp/lrdp-apt.log; exit 1; }
+          sudo apt-get install -y cmake ninja-build g++ pkg-config libssl-dev libkrb5-dev gss-ntlmssp libx11-dev libxtst-dev libxfixes-dev libxrandr-dev libxau-dev libglib2.0-dev libpipewire-0.3-dev libavcodec-dev libavutil-dev libswscale-dev xvfb ffmpeg python3 freerdp2-x11 dbus-daemon pipewire-bin xserver-xorg-core xserver-xorg-video-dummy xauth x11-xserver-utils xterm >> /tmp/lrdp-apt.log 2>&1 || { tail -100 /tmp/lrdp-apt.log; exit 1; }
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DLRDP_SANITIZE=ON -DLRDP_TEST_NTLM=ON
       - name: Build
         run: cmake --build build --parallel 2
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure --output-junit test-results.xml
       - name: Configure optimized build
         run: cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
       - name: Build optimized executable
@@ -34,3 +44,14 @@ jobs:
           cmake -S . -B build-core -G Ninja -DLRDP_BUILD_SERVER=OFF -DCMAKE_BUILD_TYPE=Release
           cmake --build build-core --parallel 2
           ctest --test-dir build-core --output-on-failure
+      - name: Collect build evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lrdp-linux-evidence
+          retention-days: 7
+          path: |
+            artifacts/revision.txt
+            build/test-results.xml
+            build/Testing/Temporary/LastTest.log
+            build-release/lrdpd

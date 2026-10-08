@@ -1,5 +1,9 @@
 #include "lrdp/session.hpp"
 #include "lrdp/transport.hpp"
+#include "lrdp/platform/clipboard_file_store.hpp"
+#ifdef LRDP_HAVE_HEADLESS
+#include "lrdp/platform/headless_desktop.hpp"
+#endif
 #ifdef LRDP_HAVE_GSSAPI
 #include "lrdp/security/nla_transport.hpp"
 #endif
@@ -34,15 +38,22 @@ struct Configuration {
     bool laboratory = false, nla = false, allow_ntlm = false, once = false, graphics = true;
     VideoOptions video;
     AudioOptions audio;
+    std::string clipboard_root;
+    FileClipboardLimits clipboard_limits;
+#ifdef LRDP_HAVE_HEADLESS
+    HeadlessOptions headless;
+#endif
 };
 void usage() {
     std::cout << "LRDP native Linux remote desktop server\n"
               << "  --cert FILE --key FILE\n"
               << "  --auth nla --service TERMSRV@host.example.org --allow-principal user@REALM\n"
               << "  [--allow-ntlm] [--listen 127.0.0.1] [--port 3389] [--max-sessions 4]\n"
-              << "  [--backend demo|x11|portal] [--display :0] [--fps 30] [--once]\n"
+              << "  [--backend demo|x11|portal|headless] [--display :0] [--fps 30] [--once]\n"
               << "  [--gfx auto|off] [--encoder auto|software|vaapi|nvenc|raw] [--device /dev/dri/renderD128]\n"
+              << "  [--desktop-command /absolute/executable] [--desktop-arg ARG] [--xorg-executable /absolute/Xorg]\n"
               << "  [--audio] [--microphone]  Publish per-session virtual PipeWire devices.\n"
+              << "  [--clipboard-files DIRECTORY] [--clipboard-max-mib 256] (x11/headless; private staging)\n"
               << "  --allow-principal can be repeated; matching is exact and case-sensitive.\n"
               << "  Alternatively: --lab-no-auth (loopback-only, no user authentication).\n"
               << "  NLA uses system GSS credentials; desktop access runs as the server's Unix user.\n";
@@ -54,6 +65,11 @@ Configuration parse(int argc, char** argv) {
         auto value = [&]() -> std::string { require(i + 1 < argc, "missing option value"); return argv[++i]; };
         if (option == "--cert") c.certificate = value(); else if (option == "--key") c.key = value();
         else if (option == "--backend") c.backend = value(); else if (option == "--display") c.display = value();
+#ifdef LRDP_HAVE_HEADLESS
+        else if (option == "--desktop-command") c.headless.command = {value()};
+        else if (option == "--desktop-arg") c.headless.command.push_back(value());
+        else if (option == "--xorg-executable") c.headless.xorg = value();
+#endif
         else if (option == "--listen") c.listen = value(); else if (option == "--port") c.port = number(value(), 65535);
         else if (option == "--fps") c.fps = number(value(), 120);
         else if (option == "--max-sessions") c.max_sessions = number(value(), 64);
@@ -63,6 +79,8 @@ Configuration parse(int argc, char** argv) {
         else if (option == "--service") c.service = value();
         else if (option == "--allow-principal") { const auto name = value(); require(!name.empty() && name.size() <= 1024, "invalid principal policy"); c.principals.insert(name); }
         else if (option == "--allow-ntlm") c.allow_ntlm = true;
+        else if (option == "--clipboard-files") c.clipboard_root = value();
+        else if (option == "--clipboard-max-mib") c.clipboard_limits.bytes = std::uint64_t(number(value(), 1024))*1024*1024;
         else if (option == "--audio") c.audio.playback = true;
         else if (option == "--microphone") c.audio.microphone = true;
         else if (option == "--lab-no-auth") c.laboratory = true; else if (option == "--once") c.once = true;
@@ -73,7 +91,10 @@ Configuration parse(int argc, char** argv) {
     require(!c.laboratory || c.listen == "127.0.0.1" || c.listen == "::1", "unauthenticated laboratory access must remain on loopback");
     require(!c.nla || (!c.service.empty() && !c.principals.empty()), "NLA requires a service identity and allowed principal");
     require(c.nla || (!c.allow_ntlm && c.service.empty() && c.principals.empty()), "authentication options are invalid in laboratory mode");
-    require(c.backend == "demo" || c.backend == "x11" || c.backend == "portal", "unknown desktop backend");
+    require(c.backend == "demo" || c.backend == "x11" || c.backend == "portal" || c.backend == "headless", "unknown desktop backend");
+#ifndef LRDP_HAVE_HEADLESS
+    require(c.backend != "headless", "this build has no headless Xorg support");
+#endif
 #ifndef LRDP_HAVE_GSSAPI
     require(!c.nla, "this build has no system GSSAPI support");
 #endif
@@ -91,6 +112,7 @@ Configuration parse(int argc, char** argv) {
 #ifndef LRDP_HAVE_FFMPEG
     require(c.video.backend == "auto" || c.video.backend == "raw", "this build has no FFmpeg support");
 #endif
+    require(c.clipboard_root.empty() || c.backend == "x11" || c.backend == "headless", "file clipboard requires the x11 or headless backend");
     c.video.fps = c.fps; return c;
 }
 int bind_listener(const Configuration& c) {
@@ -129,9 +151,13 @@ int serve(int fd, TlsContext& context, const Configuration& c, const VideoFactor
 #ifdef LRDP_HAVE_PORTAL
         if (c.backend == "portal") desktop = make_portal_desktop();
 #endif
+#ifdef LRDP_HAVE_HEADLESS
+        if (c.backend == "headless") desktop = make_headless_desktop(c.headless);
+#endif
         if (c.backend == "demo") desktop = make_demo_desktop();
         require(desktop != nullptr, "selected desktop backend unavailable");
         Session session(std::move(desktop), negotiation.protocols, protocol, video, c.graphics);
+        if (!c.clipboard_root.empty()) session.configure_file_clipboard(make_clipboard_file_store(c.clipboard_root, c.clipboard_limits), c.clipboard_limits);
 #ifdef LRDP_HAVE_AUDIO
         if (c.audio.playback || c.audio.microphone) {
             auto devices = make_pipewire_audio(c.audio);
@@ -140,7 +166,7 @@ int serve(int fd, TlsContext& context, const Configuration& c, const VideoFactor
         }
 #endif
         const auto start = Clock::now(); auto next_frame = start, last_receive = start, last_progress = start;
-        std::uint64_t previous_written = 0; bool announced = false; std::string graphics_status;
+        std::uint64_t previous_written = 0; bool announced = false; std::string graphics_status, clipboard_status;
         auto drain = [&] { stream.enqueue(session.drain()); stream.enqueue_media(session.drain_media()); };
         while (running && session.phase() != SessionPhase::closed) {
             stream.pump(10);
@@ -157,6 +183,9 @@ int serve(int fd, TlsContext& context, const Configuration& c, const VideoFactor
             const bool due = now >= next_frame;
             session.tick(stream.normal_queued() == 0, due); drain();
             if (due) next_frame = now + std::chrono::microseconds(1000000 / c.fps);
+            if (clipboard_status != session.clipboard_status()) {
+                clipboard_status = session.clipboard_status(); std::cout << "Clipboard: " << clipboard_status << '\n' << std::flush;
+            }
             if (graphics_status != session.graphics_status()) {
                 graphics_status = session.graphics_status(); std::cout << "Graphics: " << graphics_status << '\n' << std::flush;
             }

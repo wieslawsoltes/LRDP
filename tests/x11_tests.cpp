@@ -1,4 +1,5 @@
 #include "lrdp/desktop.hpp"
+#include "lrdp/clipboard/file_uri.hpp"
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <chrono>
@@ -14,7 +15,7 @@ class Application {
 public:
     Display* d = XOpenDisplay(nullptr);
     Window window;
-    Atom clipboard, utf8, incr, property;
+    Atom clipboard, utf8, incr, property, targets;
     std::string owned;
     std::optional<std::string> received;
     bool reading_increment = false;
@@ -30,6 +31,7 @@ public:
         XSelectInput(d, window, KeyPressMask | KeyReleaseMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask | PropertyChangeMask);
         XMapRaised(d, window); XSetInputFocus(d, window, RevertToParent, CurrentTime);
         clipboard = XInternAtom(d, "CLIPBOARD", False); utf8 = XInternAtom(d, "UTF8_STRING", False);
+        targets = XInternAtom(d, "TARGETS", False);
         incr = XInternAtom(d, "INCR", False); property = XInternAtom(d, "_TEST_CLIP", False);
         XSync(d, False);
     }
@@ -64,7 +66,11 @@ public:
                 reply.xselection.requestor = request.requestor; reply.xselection.selection = request.selection;
                 reply.xselection.target = request.target; reply.xselection.time = request.time;
                 reply.xselection.property = request.property;
-                if (request.target != utf8) reply.xselection.property = None;
+                if (request.target == targets) {
+                    const Atom formats[] = {targets, utf8};
+                    XChangeProperty(d, request.requestor, request.property, XA_ATOM, 32, PropModeReplace,
+                                    reinterpret_cast<const unsigned char*>(formats), 2);
+                } else if (request.target != utf8) reply.xselection.property = None;
                 else if (owned.size() <= 32768) XChangeProperty(d, request.requestor, request.property, utf8, 8, PropModeReplace,
                                                                reinterpret_cast<const unsigned char*>(owned.data()), int(owned.size()));
                 else {
@@ -102,6 +108,17 @@ int main() {
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
         };
+        const char source_bits[] = {1,2,4}, mask_bits[] = {7,7,7};
+        const auto source = XCreateBitmapFromData(app.d,app.window,source_bits,3,3);
+        const auto mask = XCreateBitmapFromData(app.d,app.window,mask_bits,3,3);
+        XColor red{}; red.red=65535; XColor green{}; green.green=65535;
+        const auto cursor = XCreatePixmapCursor(app.d,source,mask,&red,&green,1,2);
+        XDefineCursor(app.d,app.window,cursor); XWarpPointer(app.d,None,app.window,0,0,0,0,200,150); XSync(app.d,False);
+        until([&]{ const auto p=desktop->pointer_shape(); return p && p->width==3 && p->height==3; });
+        const auto shape=desktop->pointer_shape();
+        check(shape->hot_x==1 && shape->hot_y==2 && shape->bgra[2]==255 && shape->bgra[3]==255 && shape->bgra[5]==255,
+              "native XFixes cursor pixel/hotspot capture");
+        XFreeCursor(app.d,cursor); XFreePixmap(app.d,source); XFreePixmap(app.d,mask);
         app.own("native → RDP 🚀"); until([&]{ return native.has_value(); });
         check(*native == "native → RDP 🚀", "native clipboard conversion failed");
         native.reset(); app.own("changed owner value"); until([&]{ return native.has_value(); });
@@ -116,11 +133,28 @@ int main() {
         desktop->set_clipboard(large); for (int i = 0; i < 8; ++i) { (void)desktop->poll_clipboard(); app.pump(); }
         app.request(); until([&]{ return app.received.has_value(); });
         check(*app.received == large, "native INCR send corrupted data");
+        check(desktop->enable_file_clipboard(), "native file clipboard enabled");
+        std::vector<std::string> paths;
+        for (unsigned i = 0; i < 128; ++i) paths.push_back("/tmp/" + std::string(350, 'p') + std::to_string(i));
+        app.utf8 = XInternAtom(app.d, "text/uri-list", False);
+        app.own(encode_file_uris(paths)); std::optional<std::vector<std::string>> native_files;
+        until([&] { if (auto value = desktop->poll_clipboard_files()) native_files = std::move(value); return native_files.has_value(); });
+        check(native_files == paths, "native URI list INCR receive");
+        desktop->set_clipboard_files(paths);
+        until([&]{ const auto owner = XGetSelectionOwner(app.d, app.clipboard); return owner != None && owner != app.window; });
+        app.request(); until([&]{ return app.received.has_value(); });
+        check(decode_file_uris(*app.received) == paths, "native URI list INCR send");
+        app.utf8 = XInternAtom(app.d, "x-special/gnome-copied-files", False);
+        app.request(); until([&]{ return app.received.has_value(); });
+        check(app.received->starts_with("copy\n") && decode_file_uris(*app.received, true) == paths, "GNOME copy payload, never cut");
+        native_files.reset(); app.own("cut\nfile:///tmp/example\n");
+        until([&] { if (auto value = desktop->poll_clipboard_files()) native_files = std::move(value); return native_files.has_value(); });
+        check(*native_files == std::vector<std::string>{"/tmp/example"}, "GNOME local file offer");
         desktop->input({InputKind::pointer, 0x8000 | 0x1000, 0, 200, 150});
         desktop->input({InputKind::scancode, 0, 0x1e});
         until([&]{ return app.key_down > 0 && app.button_down > 0 && app.motion > 0; });
         desktop->release_input(); until([&]{ return app.key_up > 0 && app.button_up > 0; });
-        std::cout << "PASS: X11 BGRA capture, native keyboard/pointer, input release, Unicode clipboard ownership, repeated owner changes, bidirectional 180 KiB INCR transfers\n";
+        std::cout << "PASS: X11 BGRA capture, native keyboard/pointer, input release, Unicode clipboard ownership, repeated owner changes, bidirectional 180 KiB text and 45 KiB file-URI INCR transfers\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << "FAIL: " << error.what() << '\n'; return 1; }
 }
