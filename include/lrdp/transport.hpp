@@ -27,7 +27,6 @@ public:
 };
 Bytes read_negotiation(int socket);
 void write_raw(int socket, View bytes);
-
 class TlsStream {
     SSL* ssl_ = nullptr;
     int fd_;
@@ -41,6 +40,8 @@ public:
     ~TlsStream();
     TlsStream(const TlsStream&) = delete;
     TlsStream& operator=(const TlsStream&) = delete;
+    // Only the pre-RDP authentication stage may use this handle directly.
+    SSL* native_tls() const noexcept { return ssl_; }
     void enqueue(std::vector<Bytes> packets);
     void pump(int timeout_ms);
     std::optional<Bytes> packet();

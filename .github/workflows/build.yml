@@ -18,7 +18,7 @@ jobs:
       - name: Install native development dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build g++ libssl-dev libx11-dev libxtst-dev libxfixes-dev libxrandr-dev libglib2.0-dev libpipewire-0.3-dev libavcodec-dev libavutil-dev libswscale-dev xvfb ffmpeg python3 freerdp2-x11
+          sudo apt-get install -y cmake ninja-build g++ pkg-config libssl-dev libkrb5-dev gss-ntlmssp libx11-dev libxtst-dev libxfixes-dev libxrandr-dev libglib2.0-dev libpipewire-0.3-dev libavcodec-dev libavutil-dev libswscale-dev xvfb ffmpeg python3 freerdp2-x11 dbus-daemon
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DLRDP_SANITIZE=ON
       - name: Build
