@@ -1,5 +1,9 @@
 #include "lrdp/session.hpp"
 namespace lrdp {
+void Session::configure_rich_clipboard() {
+    require(phase_ == SessionPhase::connect && desktop_->enable_rich_clipboard(), "rich clipboard unavailable or configured after connection");
+    clipboard_.configure_rich();
+}
 void Session::configure_file_clipboard(std::shared_ptr<ClipboardFileStore> store, FileClipboardLimits limits) {
     require(phase_ == SessionPhase::connect && desktop_->enable_file_clipboard(), "file clipboard unavailable or configured after connection");
     clipboard_.configure_files(std::move(store), limits);
@@ -7,6 +11,7 @@ void Session::configure_file_clipboard(std::shared_ptr<ClipboardFileStore> store
 void Session::apply_clipboard(ClipboardResult result) {
     require(clipboard_channel_.has_value(), "clipboard channel unavailable");
     for (const auto& pdu : result.outbound) send_channel(*clipboard_channel_, pdu);
+    if (result.remote_rich) desktop_->set_clipboard_rich(std::move(*result.remote_rich));
     if (result.remote_text) desktop_->set_clipboard(std::move(*result.remote_text));
     if (result.remote_files) {
         desktop_->set_clipboard_files(std::move(*result.remote_files)); clipboard_status_ = "File transfer completed";
@@ -25,6 +30,8 @@ void Session::tick_clipboard() {
             clipboard_status_ = error.what();
             for (const auto& pdu : clipboard_.set_local("")) send_channel(*clipboard_channel_, pdu);
         }
+    } else if (auto rich = desktop_->poll_clipboard_rich(); clipboard_.rich_enabled() && rich) {
+        for (const auto& pdu : clipboard_.set_local_rich(std::move(*rich))) send_channel(*clipboard_channel_, pdu);
     } else if (auto text = desktop_->poll_clipboard()) {
         for (const auto& pdu : clipboard_.set_local(std::move(*text))) send_channel(*clipboard_channel_, pdu);
     }

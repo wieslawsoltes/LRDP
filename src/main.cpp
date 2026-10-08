@@ -39,6 +39,7 @@ struct Configuration {
     VideoOptions video;
     AudioOptions audio;
     std::string clipboard_root;
+    bool clipboard_rich = false;
     FileClipboardLimits clipboard_limits;
 #ifdef LRDP_HAVE_HEADLESS
     HeadlessOptions headless;
@@ -53,6 +54,7 @@ void usage() {
               << "  [--gfx auto|off] [--encoder auto|software|vaapi|nvenc|raw] [--device /dev/dri/renderD128]\n"
               << "  [--desktop-command /absolute/executable] [--desktop-arg ARG] [--xorg-executable /absolute/Xorg]\n"
               << "  [--audio] [--microphone]  Publish per-session virtual PipeWire devices.\n"
+              << "  [--clipboard-rich] (HTML and images; x11/headless)\n"
               << "  [--clipboard-files DIRECTORY] [--clipboard-max-mib 256] (x11/headless; private staging)\n"
               << "  --allow-principal can be repeated; matching is exact and case-sensitive.\n"
               << "  Alternatively: --lab-no-auth (loopback-only, no user authentication).\n"
@@ -79,6 +81,7 @@ Configuration parse(int argc, char** argv) {
         else if (option == "--service") c.service = value();
         else if (option == "--allow-principal") { const auto name = value(); require(!name.empty() && name.size() <= 1024, "invalid principal policy"); c.principals.insert(name); }
         else if (option == "--allow-ntlm") c.allow_ntlm = true;
+        else if (option == "--clipboard-rich") c.clipboard_rich = true;
         else if (option == "--clipboard-files") c.clipboard_root = value();
         else if (option == "--clipboard-max-mib") c.clipboard_limits.bytes = std::uint64_t(number(value(), 1024))*1024*1024;
         else if (option == "--audio") c.audio.playback = true;
@@ -112,6 +115,7 @@ Configuration parse(int argc, char** argv) {
 #ifndef LRDP_HAVE_FFMPEG
     require(c.video.backend == "auto" || c.video.backend == "raw", "this build has no FFmpeg support");
 #endif
+    require(!c.clipboard_rich || c.backend == "x11" || c.backend == "headless", "rich clipboard requires the x11 or headless backend");
     require(c.clipboard_root.empty() || c.backend == "x11" || c.backend == "headless", "file clipboard requires the x11 or headless backend");
     c.video.fps = c.fps; return c;
 }
@@ -157,6 +161,7 @@ int serve(int fd, TlsContext& context, const Configuration& c, const VideoFactor
         if (c.backend == "demo") desktop = make_demo_desktop();
         require(desktop != nullptr, "selected desktop backend unavailable");
         Session session(std::move(desktop), negotiation.protocols, protocol, video, c.graphics);
+        if (c.clipboard_rich) session.configure_rich_clipboard();
         if (!c.clipboard_root.empty()) session.configure_file_clipboard(make_clipboard_file_store(c.clipboard_root, c.clipboard_limits), c.clipboard_limits);
 #ifdef LRDP_HAVE_AUDIO
         if (c.audio.playback || c.audio.microphone) {

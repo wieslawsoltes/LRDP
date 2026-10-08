@@ -1,6 +1,7 @@
 #pragma once
 #include "display.hpp"
 #include "pointer.hpp"
+#include "clipboard/rich_content.hpp"
 #include <memory>
 
 namespace lrdp {
@@ -21,6 +22,9 @@ public:
     virtual bool unicode_input() const { return false; }
     virtual bool clipboard_available() const { return true; }
     virtual bool embedded_cursor() const { return false; }
+    virtual bool enable_rich_clipboard() { return false; }
+    virtual std::optional<RichClipboard> poll_clipboard_rich() { return {}; }
+    virtual void set_clipboard_rich(RichClipboard) { throw ProtocolError("backend has no rich clipboard"); }
     virtual bool enable_file_clipboard() { return false; }
     virtual std::optional<std::vector<std::string>> poll_clipboard_files() { return {}; }
     virtual void set_clipboard_files(std::vector<std::string>) { throw ProtocolError("backend has no file clipboard"); }
