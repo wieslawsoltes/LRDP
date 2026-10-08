@@ -105,7 +105,7 @@ Bytes valid_client_license() {
     Writer out; out.le16(0x80).le16(0).u8(0xff).u8(3).le16(16).le32(7).le32(2).le16(4).le16(0);
     return std::move(out).finish();
 }
-Bytes demand_active(std::uint16_t width, std::uint16_t height, std::uint16_t depth, bool resize) {
+Bytes demand_active(std::uint16_t width, std::uint16_t height, std::uint16_t depth, bool resize, bool unicode_input) {
     Writer caps;
     Writer general; general.le16(4).le16(0).le16(0x200).le16(0).le16(0).le16(0).zeros(6).u8(1).u8(1);
     capability(caps, 1, general);
@@ -116,7 +116,7 @@ Bytes demand_active(std::uint16_t width, std::uint16_t height, std::uint16_t dep
     Writer control; control.le16(0).le16(0).le16(2).le16(2); capability(caps, 5, control);
     Writer pointer; pointer.le16(1).le16(0); capability(caps, 8, pointer);
     Writer share; share.le16(server_user).le16(0); capability(caps, 9, share);
-    Writer input; input.le16(0x135).zeros(82); capability(caps, 13, input); // fast-path, Unicode, mouse X/hwheel
+    Writer input; input.le16(unicode_input ? 0x135 : 0x125).zeros(82); capability(caps, 13, input); // fast-path, Unicode, mouse X/hwheel
     Writer font; font.le16(1).le16(0); capability(caps, 14, font);
     Writer vc; vc.le32(0).le32(1600); capability(caps, 20, vc);
     Writer body; body.le32(share_id).le16(5).le16(unsigned(caps.size() + 4)).raw({'L','R','D','P',0})

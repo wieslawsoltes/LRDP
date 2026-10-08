@@ -17,5 +17,5 @@ Bytes mcs_data(std::uint16_t channel, View payload);
 Bytes share_control(std::uint16_t type, View payload);
 Bytes share_data(std::uint8_t type, View payload);
 Bytes valid_client_license();
-Bytes demand_active(std::uint16_t width, std::uint16_t height, std::uint16_t depth, bool resize);
+Bytes demand_active(std::uint16_t width, std::uint16_t height, std::uint16_t depth, bool resize, bool unicode_input = true);
 } // namespace lrdp

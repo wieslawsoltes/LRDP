@@ -17,6 +17,7 @@ class DemoDesktop final : public Desktop {
 public:
     Layout layout() const override { return layout_; }
     bool resizable() const override { return true; }
+    bool unicode_input() const override { return true; }
     bool resize(const Layout& value) override {
         // Validate allocation before publishing the new layout.
         if (std::uint64_t(value.width) * value.height > 16 * 1024 * 1024) return false;

@@ -15,6 +15,7 @@ public:
     virtual ~Desktop() = default;
     virtual Layout layout() const = 0;
     virtual bool resizable() const = 0;
+    virtual bool unicode_input() const { return false; }
     virtual bool resize(const Layout&) = 0;
     virtual Frame capture() = 0;
     virtual void input(const InputEvent&) = 0;

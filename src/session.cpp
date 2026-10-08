@@ -37,7 +37,7 @@ std::vector<Bytes> Session::drain() { std::vector<Bytes> result; result.swap(out
 void Session::activate() {
     const auto layout = desktop_->layout();
     require(layout.width <= 65535 && layout.height <= 65535, "desktop does not fit basic RDP bounds");
-    send_global(demand_active(std::uint16_t(layout.width), std::uint16_t(layout.height), settings_.depth, desktop_->resizable()));
+    send_global(demand_active(std::uint16_t(layout.width), std::uint16_t(layout.height), settings_.depth, desktop_->resizable(), desktop_->unicode_input()));
     synchronized_ = control_granted_ = false; phase_ = SessionPhase::confirm; bitmap_.invalidate();
 }
 void Session::receive(View packet) {
@@ -200,6 +200,7 @@ void Session::input_slow(View payload) {
         else if (type == 0x8001 || type == 0x8002) { event.kind = type == 0x8001 ? InputKind::pointer : InputKind::pointer_extended; event.flags = in.le16(); event.x = in.le16(); event.y = in.le16(); }
         else if (type == 0) { event.kind = InputKind::synchronize; in.skip(2); const auto flags = in.le32(); require(flags <= 15, "invalid toggle state"); event.flags = std::uint16_t(flags); }
         else throw ProtocolError("unsupported slow-path input event");
+        require(event.kind != InputKind::unicode || desktop_->unicode_input(), "Unicode input is unavailable on this backend");
         events.push_back(event);
     }
     for (const auto& event : events) desktop_->input(event);
@@ -222,6 +223,7 @@ void Session::input_fast(View packet) {
             event.kind = kind == 1 ? InputKind::pointer : InputKind::pointer_extended; event.flags = in.le16(); event.x = in.le16(); event.y = in.le16();
         } else if (kind == 3) { require(flags <= 15, "invalid sync toggles"); event.kind = InputKind::synchronize; event.flags = std::uint16_t(flags); }
         else throw ProtocolError("unnegotiated fast-path input event");
+        require(event.kind != InputKind::unicode || desktop_->unicode_input(), "Unicode input is unavailable on this backend");
         events.push_back(event);
     }
     in.end(); // Validate the complete batch before injecting any event into the desktop.
