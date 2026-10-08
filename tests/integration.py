@@ -33,18 +33,18 @@ def share(kind: int, body: bytes) -> bytes:
     return u16(len(body) + 6) + u16(0x10 | kind) + u16(1001) + body
 
 def share_data(kind: int, body: bytes) -> bytes:
-    return share(7, u32(0x103ea) + b'\x00\x02' + u16(len(body) + 18) + bytes([kind, 0]) + b'\x00\x00' + body)
+    return share(7, u32(0x103ea) + b'\x00\x02' + u16(0xda3b if kind == 39 else len(body) + 4) + bytes([kind, 0]) + b'\x00\x00' + body)
 
 def clip(kind: int, flags: int, body: bytes = b'') -> bytes:
     return u16(kind) + u16(flags) + u32(len(body)) + body
 
 def static(body: bytes) -> bytes: return u32(len(body)) + u32(3) + body
 
-def client_connect(width: int = 640, height: int = 480) -> bytes:
+def client_connect(width: int = 640, height: int = 480, gfx: bool = False) -> bytes:
     core = struct.pack('<IHHHHII', 0x80004, width, height, 0xca01, 0xaa03, 0x409, 22631)
     core += 'LRDP-fixture'.encode('utf-16-le').ljust(32, b'\x00')
     core += struct.pack('<III', 4, 0, 12) + bytes(64)
-    core += struct.pack('<HHIHHH', 0xca04, 1, 0, 24, 0x0f, 0) + bytes(64) + bytes([6, 0]) + u32(1)
+    core += struct.pack('<HHIHHH', 0xca04, 1, 0, 24, 0x0f, 0x100 if gfx else 0) + bytes(64) + bytes([6, 0]) + u32(1)
     assert len(core) == 212
     def block(kind: int, body: bytes) -> bytes: return u16(kind) + u16(len(body) + 4) + body
     channels = u32(2) + b'cliprdr\x00' + u32(0x80800000) + b'drdynvc\x00' + u32(0x80800000)
@@ -200,7 +200,7 @@ class Client:
         self.until(lambda: self.font_map)
 
     def connect(self) -> None:
-        self.stream.sendall(client_connect())
+        self.stream.sendall(client_connect(gfx=getattr(self, 'use_gfx', False)))
         response = self.recv_packet()
         assert response[7:9] == b'\x7f\x66' and b'McDn' in response
         self.stream.sendall(x224(b'\x04\x01\x00\x01\x00') + x224(b'\x28'))
@@ -214,7 +214,7 @@ class Client:
         self.confirm()
 
 
-def run(binary: pathlib.Path, output: pathlib.Path | None = None) -> None:
+def run(binary: pathlib.Path, output: pathlib.Path | None = None, client_class=Client) -> None:
     with tempfile.TemporaryDirectory(prefix='lrdp-test-') as directory:
         root = pathlib.Path(directory)
         cert, key = root / 'cert.pem', root / 'key.pem'
@@ -228,9 +228,9 @@ def run(binary: pathlib.Path, output: pathlib.Path | None = None) -> None:
         try:
             assert server.stdout is not None
             line = server.stdout.readline(); assert 'listening' in line, line
-            client = Client(socket.create_connection(('127.0.0.1', port)), cert)
+            client = client_class(socket.create_connection(('127.0.0.1', port)), cert)
             client.connect()
-            client.until(lambda: len(client.pixel_coverage) == 40 and client.remote_text is not None and client.display_caps is not None)
+            client.until(lambda: (getattr(client, 'gfx_frames', 0) > 0 if getattr(client, 'use_gfx', False) else len(client.pixel_coverage) == 40) and client.remote_text is not None and client.display_caps is not None)
             assert client.remote_text.startswith('LRDP native protocol laboratory')
             assert client.display_caps == u32(5) + u32(20) + u32(16) + u32(1024) + u32(1024)
             # Golden pixel colors prove BGR ordering and bottom-up rectangle row handling.
@@ -256,8 +256,8 @@ def run(binary: pathlib.Path, output: pathlib.Path | None = None) -> None:
             client.until(lambda: client.demand is not None)
             assert any(kind == 6 for kind, _ in client.events)
             client.confirm()
-            old_count = client.bitmap_count
-            client.until(lambda: client.bitmap_count > old_count)
+            old_count = getattr(client, 'gfx_frames', client.bitmap_count)
+            client.until(lambda: getattr(client, 'gfx_frames', client.bitmap_count) > old_count)
             client.send_share(35, bytes(4)) # Suppress output.
             client.stream.close()
             stdout, stderr = server.communicate(timeout=15)

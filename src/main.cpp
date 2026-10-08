@@ -21,18 +21,23 @@ int main(int argc, char** argv) {
     using namespace lrdp;
     try {
         std::string cert, key, backend = "demo", display;
-        unsigned port = 3389, fps = 30; bool lab = false, once = false;
+        unsigned port = 3389, fps = 30; bool lab = false, once = false, gfx = true;
+        VideoOptions video_options;
         for (int i = 1; i < argc; ++i) {
             const std::string arg = argv[i];
             auto value = [&]() -> std::string { require(i + 1 < argc, "missing option value"); return argv[++i]; };
             if (arg == "--cert") cert = value(); else if (arg == "--key") key = value();
             else if (arg == "--port") port = number(value(), 65535); else if (arg == "--fps") fps = number(value(), 120);
+            else if (arg == "--encoder") video_options.backend = value();
+            else if (arg == "--device") video_options.device = value();
+            else if (arg == "--gfx") { const auto mode = value(); require(mode == "off" || mode == "auto", "invalid GFX mode"); gfx = mode == "auto"; }
             else if (arg == "--backend") backend = value(); else if (arg == "--display") display = value();
             else if (arg == "--lab-no-auth") lab = true; else if (arg == "--once") once = true;
             else if (arg == "--help") {
                 std::cout << "LRDP experimental native server\n"
                           << "Usage: lrdpd --lab-no-auth --cert certificate.pem --key private-key.pem\n"
                           << "              [--port 3389] [--fps 30] [--backend demo|x11] [--display :0] [--once]\n"
+                          << "              [--gfx auto|off] [--encoder auto|software|vaapi|nvenc|raw] [--device /dev/dri/renderD128]\n"
                           << "Loopback-only TLS laboratory profile. NLA and production authentication are not implemented.\n"; return 0;
             } else throw ProtocolError("unknown command-line argument");
         }
@@ -41,6 +46,14 @@ int main(int argc, char** argv) {
         require(backend == "demo" || backend == "x11", "unknown desktop backend");
 #ifndef LRDP_HAVE_X11
         require(backend != "x11", "this binary was built without X11 support");
+#endif
+        require(video_options.backend == "auto" || video_options.backend == "software" || video_options.backend == "vaapi" || video_options.backend == "nvenc" || video_options.backend == "raw", "invalid video encoder");
+        VideoFactory video_factory;
+#ifdef LRDP_HAVE_FFMPEG
+        video_options.fps = fps;
+        if (video_options.backend != "raw") video_factory = ffmpeg_video_factory(video_options);
+#else
+        require(video_options.backend == "auto" || video_options.backend == "raw", "this binary was built without FFmpeg video support");
 #endif
         std::signal(SIGPIPE, SIG_IGN); std::signal(SIGTERM, stop); std::signal(SIGINT, stop);
         TlsContext tls(cert, key);
@@ -66,7 +79,8 @@ int main(int argc, char** argv) {
                 if (backend == "x11") desktop = make_x11_desktop(display);
 #endif
                 if (!desktop) desktop = make_demo_desktop();
-                Session session(std::move(desktop), negotiation.protocols);
+                Session session(std::move(desktop), negotiation.protocols, 1, video_factory, gfx);
+                std::string graphics_status;
                 using Clock = std::chrono::steady_clock;
                 const auto start = Clock::now(); auto next_frame = start, last_receive = start, last_progress = start;
                 auto previous_queued = stream.queued(); bool announced = false;
@@ -84,9 +98,11 @@ int main(int argc, char** argv) {
                     require(now - last_receive < std::chrono::minutes(30), "idle session deadline exceeded");
                     if (!stream.queued() || stream.queued() < previous_queued) last_progress = now;
                     require(now - last_progress < std::chrono::seconds(15), "client is not draining its output queue"); previous_queued = stream.queued();
-                    if (now >= next_frame) {
-                        session.tick(stream.queued() == 0); stream.enqueue(session.drain());
-                        next_frame = now + std::chrono::microseconds(1000000 / fps);
+                    const bool capture_due = now >= next_frame;
+                    session.tick(stream.queued() == 0, capture_due); stream.enqueue(session.drain());
+                    if (capture_due) next_frame = now + std::chrono::microseconds(1000000 / fps);
+                    if (graphics_status != session.graphics_status()) {
+                        graphics_status = session.graphics_status(); std::cout << "Graphics: " << graphics_status << '\n' << std::flush;
                     }
                 }
             } catch (const std::exception& error) { std::cerr << "Session ended: " << error.what() << '\n'; }

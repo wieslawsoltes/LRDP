@@ -8,6 +8,7 @@ inline constexpr std::uint32_t share_id = 0x000103ea;
 struct ClientSettings {
     std::uint16_t width = 1280, height = 720, depth = 24;
     std::uint32_t keyboard_layout = 0;
+    std::uint16_t early_caps = 0;
     std::map<std::string, std::uint16_t> channels;
     std::vector<std::uint16_t> channel_ids;
 };

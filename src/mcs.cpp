@@ -44,7 +44,8 @@ ClientSettings connect_initial(View payload, std::uint32_t selected_protocol) {
                     "initial desktop dimensions exceed policy");
             data.skip(4); settings.keyboard_layout = data.le32(); data.skip(112);
             const auto post_beta = data.le16(); data.skip(6); const auto high_color = data.le16();
-            data.skip(70); require(data.le32() == selected_protocol, "TLS protocol selection tampering");
+            data.skip(2); settings.early_caps = data.le16(); data.skip(66);
+            require(data.le32() == selected_protocol, "TLS protocol selection tampering");
             settings.depth = high_color;
             if (settings.depth != 15 && settings.depth != 16 && settings.depth != 24) {
                 settings.depth = post_beta == 0xca02 ? 15 : post_beta == 0xca03 ? 16 : 24;
@@ -107,7 +108,7 @@ Bytes valid_client_license() {
 }
 Bytes demand_active(std::uint16_t width, std::uint16_t height, std::uint16_t depth, bool resize, bool unicode_input) {
     Writer caps;
-    Writer general; general.le16(4).le16(0).le16(0x200).le16(0).le16(0).le16(0).zeros(6).u8(1).u8(1);
+    Writer general; general.le16(4).le16(0).le16(0x200).le16(0).le16(0).le16(0).le16(0).zeros(6).u8(1).u8(1);
     capability(caps, 1, general);
     Writer bitmap; bitmap.le16(depth).le16(1).le16(1).le16(1).le16(width).le16(height).le16(0).le16(resize ? 1 : 0)
         .le16(1).u8(0).u8(0).le16(1).le16(0); capability(caps, 2, bitmap);

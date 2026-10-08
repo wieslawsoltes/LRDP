@@ -20,8 +20,9 @@ void validate_client_info(View payload) {
     require(in.remaining() <= 8192, "extended Client Info exceeds policy");
 }
 }
-Session::Session(std::unique_ptr<Desktop> desktop, std::uint32_t requested_protocols, std::uint32_t selected_protocol)
-    : desktop_(std::move(desktop)), requested_protocols_(requested_protocols), selected_protocol_(selected_protocol) {
+Session::Session(std::unique_ptr<Desktop> desktop, std::uint32_t requested_protocols, std::uint32_t selected_protocol, VideoFactory video, bool graphics)
+    : desktop_(std::move(desktop)), requested_protocols_(requested_protocols), selected_protocol_(selected_protocol),
+      video_factory_(std::move(video)), graphics_enabled_(graphics) {
     require(desktop_ != nullptr, "a session requires a desktop");
 }
 Session::~Session() { try { desktop_->release_input(); } catch (...) {} }
@@ -34,7 +35,11 @@ void Session::send_dynamic(std::uint32_t id, View message) {
     for (const auto& fragment : dynamic_.send(id, message)) send_channel(*dynamic_channel_, fragment);
 }
 std::vector<Bytes> Session::drain() { std::vector<Bytes> result; result.swap(outbound_); return result; }
+void Session::flush_graphics() {
+    for (const auto& packet : graphics_.drain()) send_dynamic(2, packet);
+}
 void Session::activate() {
+    ++graphics_generation_; previous_graphics_ = {}; graphics_reset_ = true;
     const auto layout = desktop_->layout();
     require(layout.width <= 65535 && layout.height <= 65535, "desktop does not fit basic RDP bounds");
     send_global(demand_active(std::uint16_t(layout.width), std::uint16_t(layout.height), settings_.depth, desktop_->resizable(), desktop_->unicode_input()));
@@ -42,10 +47,11 @@ void Session::activate() {
 }
 void Session::receive(View packet) {
     require(phase_ != SessionPhase::closed && !packet.empty(), "session is closed or packet empty");
-    if (packet[0] != 3) { require(active(), "fast-path input before activation"); input_fast(packet); return; }
+    if (packet[0] != 3) { require(active() || phase_ == SessionPhase::finalize, "fast-path input before Confirm Active"); input_fast(packet); return; }
     const auto payload = parse_x224_data(packet);
     if (phase_ == SessionPhase::connect) {
         settings_ = connect_initial(payload, selected_protocol_);
+        graphics_requested_ = graphics_enabled_ && (settings_.early_caps & 0x100);
         if (desktop_->resizable()) {
             Monitor monitor; monitor.width = (settings_.width + 1U) & ~1U; monitor.height = settings_.height;
             require(desktop_->resize(validate_layout({monitor})), "initial resize rejected by backend");
@@ -131,7 +137,10 @@ void Session::share_packet(View payload) {
     require(in.le32() == share_id, "Share Data share mismatch"); in.skip(2);
     const auto unpacked = in.le16(); const auto subtype = in.u8(), compression = in.u8(); const auto compressed = in.le16();
     require(compression == 0 && compressed == 0, "bulk compression was not negotiated");
-    require(unpacked == payload.size(), "Share Data uncompressed length mismatch");
+    // MS-RDPBCGR 4.1.14 uses a different client length convention;
+    // 4.1.18 even documents an uninitialized Font List length. With compression
+    // disabled, the already-validated Share Control size is authoritative.
+    (void)unpacked;
     const auto body = in.take(in.remaining()); Reader data(body);
     switch (subtype) {
     case 31:
@@ -152,18 +161,18 @@ void Session::share_packet(View payload) {
         if (!channels_started_) {
             channels_started_ = true;
             if (clipboard_channel_) for (const auto& pdu : clipboard_.start()) send_channel(*clipboard_channel_, pdu);
-            if (dynamic_channel_ && desktop_->resizable() && client_resize_) send_channel(*dynamic_channel_, DynamicChannels::capabilities());
+            if (dynamic_channel_ && ((desktop_->resizable() && client_resize_) || graphics_requested_)) send_channel(*dynamic_channel_, DynamicChannels::capabilities());
         }
         break;
     }
-    case 28: require(active(), "input before activation"); input_slow(body); break;
+    case 28: input_slow(body); break;
     case 33: {
         const auto count = data.u8(); data.skip(3); require(count > 0 && data.remaining() == std::size_t(count) * 8, "invalid Refresh Rect");
-        bitmap_.invalidate(); break;
+        bitmap_.invalidate(); previous_graphics_ = {}; break;
     }
     case 35: {
         const auto allow = data.u8(); require(allow <= 1, "invalid Suppress Output flag"); data.skip(3);
-        if (allow) { data.skip(8); bitmap_.invalidate(); } data.end(); suppressed_ = !allow;
+        if (allow) { data.skip(8); bitmap_.invalidate(); previous_graphics_ = {}; } data.end(); suppressed_ = !allow;
         if (suppressed_) desktop_->release_input();
         break;
     }
@@ -182,11 +191,28 @@ void Session::static_channel(std::uint16_t channel, View payload) {
         for (const auto& pdu : result.outbound) send_channel(channel, pdu);
         if (result.remote_text) desktop_->set_clipboard(std::move(*result.remote_text));
     } else {
-        require(desktop_->resizable() && client_resize_, "dynamic display channel unavailable");
         for (const auto& event : dynamic_.accept(*complete)) {
-            if (event.kind == DvcEventKind::ready) send_channel(channel, dynamic_.create(1, "Microsoft::Windows::RDS::DisplayControl"));
-            else if (event.id == 1 && event.kind == DvcEventKind::opened) send_dynamic(1, display_caps());
+            if (event.kind == DvcEventKind::ready) {
+                if (desktop_->resizable() && client_resize_) send_channel(channel, dynamic_.create(1, "Microsoft::Windows::RDS::DisplayControl"));
+                if (graphics_requested_) send_channel(channel, dynamic_.create(2, "Microsoft::Windows::RDS::Graphics"));
+            } else if (event.id == 1 && event.kind == DvcEventKind::opened) send_dynamic(1, display_caps());
             else if (event.id == 1 && event.kind == DvcEventKind::data) { require(active(), "display request during activation"); display_->request(event.data); }
+            else if (event.id == 2 && event.kind == DvcEventKind::data) {
+                if (!graphics_.receive(event.data, bool(video_factory_))) {
+                    send_channel(channel, dynamic_.close(2)); graphics_requested_ = false;
+                    graphics_status_ = "No implemented GFX capability offered; using bitmap updates";
+                } else {
+                    if (!graphics_.ready()) {
+                        graphics_.reset(desktop_->layout()); graphics_reset_ = false; previous_graphics_ = {};
+                        if (graphics_.avc420()) video_ = std::make_unique<VideoWorker>(video_factory_);
+                        graphics_status_ = graphics_.avc420() ? "AVC420 negotiated; encoder initialization pending" : "GFX uncompressed BGRA";
+                    }
+                    flush_graphics();
+                }
+            } else if (event.id == 2 && (event.kind == DvcEventKind::rejected || event.kind == DvcEventKind::closed)) {
+                graphics_requested_ = false; video_.reset(); bitmap_.invalidate();
+                graphics_status_ = "GFX channel unavailable; using bitmap updates";
+            }
         }
     }
 }
@@ -229,18 +255,45 @@ void Session::input_fast(View packet) {
     in.end(); // Validate the complete batch before injecting any event into the desktop.
     for (const auto& event : events) desktop_->input(event);
 }
-void Session::tick(bool graphics_ready) {
+void Session::tick(bool transport_ready, bool capture_due) {
     if (!active()) return;
     if (clipboard_channel_) if (auto text = desktop_->poll_clipboard()) {
         for (const auto& pdu : clipboard_.set_local(std::move(*text))) send_channel(*clipboard_channel_, pdu);
     }
-    if (!graphics_ready) return;
+    if (!transport_ready) return;
     if (display_ && display_->commit([&](const Layout& layout) { return desktop_->resize(layout); })) {
         desktop_->release_input();
         Writer body; body.le32(share_id).le16(0); send_global(share_control(6, body.bytes()));
         activate(); return;
     }
     if (suppressed_) return;
+    if (graphics_requested_ && graphics_.ready()) {
+        if (graphics_reset_) { graphics_.reset(desktop_->layout()); graphics_reset_ = false; flush_graphics(); }
+        if (!graphics_.can_send()) return;
+        if (video_) {
+            if (auto result = video_->take()) {
+                if (!result->error.empty()) {
+                    graphics_status_ = "Video encoder failed; using GFX BGRA: " + result->error;
+                    video_.reset(); previous_graphics_ = {};
+                } else if (result->generation == graphics_generation_) {
+                    const auto& frame = *result->frame;
+                    graphics_.video_frame(frame.annex_b, frame.width, frame.height);
+                    graphics_status_ = frame.encoder + (frame.hardware ? " (hardware encode; CPU capture/upload)" : " (software encode)");
+                    flush_graphics(); return;
+                }
+            }
+            if (video_ && !video_->available()) return;
+        }
+        if (!capture_due) return;
+        auto frame = desktop_->capture();
+        const bool key_frame = previous_graphics_.width != frame.width || previous_graphics_.height != frame.height;
+        if (!key_frame && frame.bgra == previous_graphics_.bgra) return;
+        previous_graphics_ = frame;
+        if (video_) video_->submit(std::move(frame), graphics_generation_, key_frame);
+        else { graphics_.raw_frame(frame); flush_graphics(); }
+        return;
+    }
+    if (!capture_due) return;
     auto packets = bitmap_.encode(desktop_->capture(), settings_.depth);
     for (auto& packet : packets) outbound_.push_back(std::move(packet));
 }

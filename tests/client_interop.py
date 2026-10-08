@@ -8,6 +8,7 @@ import tempfile
 import time
 
 server_binary, client_binary = map(str, sys.argv[1:3])
+use_gfx = '--gfx' in sys.argv[3:]
 with tempfile.TemporaryDirectory(prefix='lrdp-interop-') as directory:
     root = pathlib.Path(directory)
     cert, key = root / 'cert.pem', root / 'key.pem'
@@ -16,7 +17,7 @@ with tempfile.TemporaryDirectory(prefix='lrdp-interop-') as directory:
     with socket.socket() as listener:
         listener.bind(('127.0.0.1', 0)); port = listener.getsockname()[1]
     with (root / 'server.log').open('w+') as server_log, (root / 'client.log').open('w+') as client_log:
-        server = subprocess.Popen([server_binary, '--lab-no-auth', '--cert', str(cert), '--key', str(key), '--port', str(port), '--once'],
+        server = subprocess.Popen([server_binary, '--lab-no-auth', '--cert', str(cert), '--key', str(key), '--port', str(port), '--encoder', 'software' if use_gfx else 'raw', '--once'],
                                   stdout=server_log, stderr=subprocess.STDOUT)
         client = None
         try:
@@ -27,15 +28,15 @@ with tempfile.TemporaryDirectory(prefix='lrdp-interop-') as directory:
                 if server.poll() is not None or time.monotonic() >= deadline: raise RuntimeError('server did not start')
                 time.sleep(0.05)
             client = subprocess.Popen([client_binary, f'/v:127.0.0.1:{port}', '/u:lrdp-fixture', '/p:unused',
-                                       '/cert:ignore', '/sec:tls', '/size:640x480', '/bpp:24', '+clipboard', '/log-level:DEBUG'],
+                                       '/cert:ignore', '/sec:tls', '/size:640x480', '/bpp:32' if use_gfx else '/bpp:24', '+clipboard', '/log-level:DEBUG'] + (['/gfx:AVC420'] if use_gfx else []),
                                       stdout=client_log, stderr=subprocess.STDOUT)
             deadline = time.monotonic() + 20
             while True:
                 server_log.seek(0); text = server_log.read()
-                if 'Session active' in text:
+                if 'Session active' in text and (not use_gfx or 'libx264 (software encode)' in text):
                     time.sleep(1)
                     if client.poll() is not None: raise RuntimeError('client disconnected immediately after activation')
-                    print('PASS: independent FreeRDP client reached and remained in an active TLS RDP desktop session')
+                    print('PASS: independent FreeRDP client reached and remained in an active TLS RDP desktop session' + (' with AVC420 video' if use_gfx else ''))
                     break
                 if server.poll() is not None or client.poll() is not None or time.monotonic() >= deadline:
                     raise RuntimeError('independent client did not reach session activation')
