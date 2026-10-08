@@ -108,3 +108,5 @@ if(LRDP_BUILD_SERVER)
   include(cmake/LrdpHeadless.cmake)
   include(cmake/LrdpExtensions.cmake)
 endif()
+
+include(cmake/LrdpRichClipboard.cmake)

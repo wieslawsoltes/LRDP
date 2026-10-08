@@ -2,11 +2,14 @@
 #include "wire.hpp"
 #include "clipboard/file_transfer.hpp"
 #include <optional>
+#include <deque>
+#include "clipboard/rich_content.hpp"
 
 namespace lrdp {
 struct ClipboardResult {
     std::vector<Bytes> outbound;
     std::optional<std::string> remote_text;
+    std::optional<RichClipboard> remote_rich;
     std::optional<std::vector<std::string>> remote_files;
     std::optional<std::string> file_error;
 };
@@ -23,6 +26,11 @@ class Clipboard {
     std::uint64_t remote_generation_ = 0;
     std::optional<std::uint64_t> request_generation_;
     std::optional<std::uint32_t> remote_files_format_;
+    bool rich_enabled_ = false;
+    std::shared_ptr<const RichClipboard> local_rich_, published_rich_;
+    std::deque<std::pair<std::uint32_t, unsigned>> rich_requests_;
+    std::optional<unsigned> rich_kind_;
+    RichClipboard received_rich_;
     std::string local_text_;
     std::optional<std::string> published_text_;
     std::unique_ptr<ClipboardFiles> files_;
@@ -36,6 +44,10 @@ public:
     explicit Clipboard(std::size_t limit = 1024 * 1024) : limit_(limit) {}
     void configure_files(std::shared_ptr<ClipboardFileStore> store, FileClipboardLimits limits = {});
     bool files_enabled() const { return bool(files_); }
+    void configure_rich();
+    bool rich_enabled() const { return rich_enabled_; }
+    std::size_t message_limit() const { return limit_ + 8; }
+    std::vector<Bytes> set_local_rich(RichClipboard content);
     std::vector<Bytes> start();
     std::vector<Bytes> set_local(std::string text);
     std::vector<Bytes> set_local_files(const std::vector<std::string>& paths);

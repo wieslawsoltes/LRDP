@@ -1,0 +1,6 @@
+target_sources(lrdp_protocol PRIVATE src/clipboard_html.cpp src/clipboard_dib.cpp)
+if(BUILD_TESTING)
+  add_executable(lrdp_rich_clipboard_tests tests/rich_clipboard_tests.cpp)
+  target_link_libraries(lrdp_rich_clipboard_tests PRIVATE lrdp_protocol)
+  add_test(NAME rich_clipboard COMMAND lrdp_rich_clipboard_tests)
+endif()
