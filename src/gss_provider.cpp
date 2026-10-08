@@ -1,5 +1,6 @@
 #include "lrdp/security/credssp.hpp"
 #include "lrdp/security/ntlm_policy.hpp"
+#include "lrdp/security/principal.hpp"
 #include <cstring>
 #include <gssapi/gssapi.h>
 #include <openssl/crypto.h>
@@ -64,18 +65,17 @@ public:
             constexpr OM_uint32 protection = GSS_C_INTEG_FLAG | GSS_C_CONF_FLAG;
             require((flags & protection) == protection && !(flags & GSS_C_ANON_FLAG), "GSS context lacks authenticated confidentiality/integrity");
             if (ntlm_) {
-                // GSS-NTLMSSP acceptors report SIGN/SEAL but not the abstract
-                // GSS sequence/replay flags. Enforce ESS sequence numbers in
-                // addition to mandatory GSS signature verification on each PDU.
+                // NTLM acceptors do not report abstract GSS replay/sequence flags.
+                // Inspect NTLMv2/ESS and enforce sequence numbers on protected PDUs,
+                // in addition to system GSS's mandatory signature verification.
                 require(ntlm_v2_seen_, "GSS NTLM context did not authenticate an inspected NTLMv2 response");
             } else {
                 constexpr OM_uint32 order = GSS_C_SEQUENCE_FLAG | GSS_C_REPLAY_FLAG;
                 require((flags & order) == order, "Kerberos context lacks replay and sequence protection");
             }
             Buffer text; success(gss_display_name(&minor, source.value, &text.value, nullptr), "read authenticated principal");
-            require(text.value.length > 0 && text.value.length <= 1024, "invalid GSS principal length");
-            step.principal.assign(static_cast<const char*>(text.value.value), text.value.length);
-            for (unsigned char c : step.principal) require(c >= 32 && c != 127, "GSS principal contains control characters");
+            require(text.value.value != nullptr, "GSS returned no authenticated principal");
+            step.principal = authenticated_principal(View(static_cast<const std::uint8_t*>(text.value.value), text.value.length));
             established_ = true;
         }
         return step;
