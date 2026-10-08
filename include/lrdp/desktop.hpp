@@ -13,9 +13,13 @@ struct InputEvent { InputKind kind; std::uint16_t flags = 0, code = 0, x = 0, y 
 class Desktop {
 public:
     virtual ~Desktop() = default;
+    // Always called, even with output suppressed or no clipboard channel joined.
+    virtual void pump() {}
     virtual Layout layout() const = 0;
     virtual bool resizable() const = 0;
     virtual bool unicode_input() const { return false; }
+    virtual bool clipboard_available() const { return true; }
+    virtual bool embedded_cursor() const { return false; }
     virtual bool resize(const Layout&) = 0;
     virtual Frame capture() = 0;
     virtual void input(const InputEvent&) = 0;
@@ -23,12 +27,8 @@ public:
     virtual std::optional<std::string> poll_clipboard() = 0;
     virtual void release_input() = 0;
 };
-// The deterministic desktop is a visible protocol diagnostic, not a Linux login session.
 std::unique_ptr<Desktop> make_demo_desktop();
 std::unique_ptr<Desktop> make_x11_desktop(const std::string& display);
-
-// Byte comparisons, not probabilistic hashes: every changed pixel is eventually delivered.
-// The transport calls this only when its previous frame has drained, bounding latency/memory.
 class BitmapEncoder {
     Frame previous_;
 public:

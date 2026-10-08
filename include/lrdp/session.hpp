@@ -12,6 +12,7 @@ enum class SessionPhase { connect, erect, attach, join, info, confirm, finalize,
 class Session {
     std::unique_ptr<Desktop> desktop_;
     ClientSettings settings_;
+    Layout active_layout_;
     SessionPhase phase_ = SessionPhase::connect;
     std::uint32_t requested_protocols_, selected_protocol_;
     std::set<std::uint16_t> joined_;
@@ -28,7 +29,6 @@ class Session {
     std::uint64_t graphics_generation_ = 0;
     bool graphics_enabled_ = true, graphics_requested_ = false, graphics_reset_ = false;
     std::string graphics_status_;
-    void flush_graphics();
     bool channels_started_ = false, suppressed_ = false;
     bool synchronized_ = false, control_granted_ = false, client_resize_ = false;
     std::vector<Bytes> outbound_;
@@ -36,10 +36,14 @@ class Session {
     void send_channel(std::uint16_t id, View message);
     void send_dynamic(std::uint32_t id, View message);
     void activate();
+    void reactivate();
+    void invalidate_graphics();
+    void flush_graphics();
     void share_packet(View payload);
     void static_channel(std::uint16_t channel, View payload);
     void input_slow(View payload);
     void input_fast(View packet);
+    void dispatch_input(const std::vector<InputEvent>& events);
 public:
     explicit Session(std::unique_ptr<Desktop> desktop, std::uint32_t requested_protocols,
                      std::uint32_t selected_protocol = 1, VideoFactory video = {}, bool graphics = true);

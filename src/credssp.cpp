@@ -44,8 +44,6 @@ void validate_delegation(View bytes) {
     Reader password(der(payload, 0x30)); payload.end();
     for (unsigned tag = 0xa0; tag <= 0xa2; ++tag) { Reader item(der(password, tag)); unicode(der(item, 4)); item.end(); }
     password.end();
-    // The already-authenticated GSS principal is the authorization identity.
-    // Delegated passwords are intentionally neither logged, stored nor executed.
 }
 struct Wipe { Bytes& bytes; ~Wipe() { OPENSSL_cleanse(bytes.data(), bytes.size()); } };
 }
@@ -106,8 +104,15 @@ CredsspReply CredsspServer::receive(View message) {
         require(request.version >= 5 && (!peer_version_ || request.version == peer_version_), "insecure or changing CredSSP version");
         peer_version_ = request.version; version_ = std::min(6U, request.version);
         require(!request.error || *request.error == 0, "CredSSP peer reported an authentication error");
+        // MS-CSSP 2.2.1 permits clientNonce on TSRequest. Some clients include it
+        // on every authentication token, not just on the public-key binding PDU.
+        if (request.nonce) {
+            require(request.nonce->size() == 32, "invalid CredSSP nonce length");
+            if (nonce_.empty()) nonce_.assign(request.nonce->begin(), request.nonce->end());
+            else require(CRYPTO_memcmp(nonce_.data(), request.nonce->data(), 32) == 0, "CredSSP nonce changed within an exchange");
+        }
         if (state_ == State::credentials) {
-            require(request.auth_info && !request.token && !request.public_key_auth && !request.nonce, "unexpected CredSSP credential-phase fields");
+            require(request.auth_info && !request.token && !request.public_key_auth, "unexpected CredSSP credential-phase fields");
             auto plaintext = provider_.unseal(*request.auth_info); Wipe wipe{plaintext}; validate_delegation(plaintext);
             state_ = State::complete; return {std::nullopt, true};
         }
@@ -125,13 +130,13 @@ CredsspReply CredsspServer::receive(View message) {
         if (!output.empty()) response.token = View(output);
         Bytes binding;
         if (request.public_key_auth) {
-            require(state_ == State::binding && request.nonce && request.nonce->size() == 32, "premature or incomplete CredSSP TLS binding");
+            require(state_ == State::binding && nonce_.size() == 32, "premature or incomplete CredSSP TLS binding");
             auto actual = provider_.unseal(*request.public_key_auth); Wipe wipe{actual};
-            const auto expected = credssp_binding_hash(public_key_, *request.nonce, false);
+            const auto expected = credssp_binding_hash(public_key_, nonce_, false);
             require(actual.size() == expected.size() && CRYPTO_memcmp(actual.data(), expected.data(), expected.size()) == 0, "CredSSP TLS public-key binding mismatch");
-            binding = provider_.seal(credssp_binding_hash(public_key_, *request.nonce, true)); response.public_key_auth = View(binding);
+            binding = provider_.seal(credssp_binding_hash(public_key_, nonce_, true)); response.public_key_auth = View(binding);
             state_ = State::credentials;
-        } else require(!request.nonce, "CredSSP nonce without public-key authentication");
+        }
         if (!response.token && !response.public_key_auth) return {};
         return {encode_ts_request(response), false};
     } catch (...) { state_ = State::failed; throw; }
