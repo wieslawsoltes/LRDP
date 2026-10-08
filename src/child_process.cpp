@@ -30,24 +30,33 @@ void ChildProcess::start(const std::vector<std::string>& arguments, const std::m
         if (equal != std::string::npos) env[value.substr(0,equal)] = value.substr(equal+1);
     }
     for (const auto& key : remove) env.erase(key);
-    for (const auto& [key,value] : changes) env[key] = value;
+    for (const auto& [key,value] : changes) {
+        require(!key.empty() && key.find_first_of("=\0",0,2) == std::string::npos && value.find('\0') == std::string::npos,"invalid child environment entry");
+        env[key] = value;
+    }
     std::vector<std::string> storage; storage.reserve(env.size());
     for (const auto& [key,value] : env) storage.push_back(key+'='+value);
     std::vector<char*> envp; envp.reserve(storage.size()+1);
     for (auto& value : storage) envp.push_back(value.data());
     envp.push_back(nullptr);
     UniqueFd null(open("/dev/null",O_RDONLY|O_CLOEXEC)); require(bool(null) && log_fd >= 0,"missing child I/O descriptors");
+    // Duplicate above stdio/readiness slots so even a caller with closed stdio
+    // cannot make dup2 overwrite another source descriptor.
+    UniqueFd child_input(fcntl(null.get(),F_DUPFD_CLOEXEC,10));
+    UniqueFd child_log(fcntl(log_fd,F_DUPFD_CLOEXEC,10));
+    UniqueFd child_display(display_fd >= 0 ? fcntl(display_fd,F_DUPFD_CLOEXEC,10) : -1);
+    require(bool(child_input) && bool(child_log) && (display_fd < 0 || bool(child_display)),"cannot duplicate child I/O descriptors");
     // All memory and signal structures are prepared before fork, including when
     // this facility is called in a process that has already used a GSS provider.
     struct sigaction action{}; action.sa_handler = SIG_DFL; sigemptyset(&action.sa_mask);
     sigset_t mask; sigemptyset(&mask); const auto parent = getpid();
     const auto child = fork(); require(child >= 0,"cannot launch native desktop process");
     if (child == 0) {
-        if (prctl(PR_SET_PDEATHSIG,SIGTERM) != 0 || getppid() != parent || prctl(PR_SET_NO_NEW_PRIVS,1,0,0,0) != 0) _exit(125);
         for (int signal : {SIGTERM,SIGINT,SIGHUP,SIGPIPE,SIGCHLD}) sigaction(signal,&action,nullptr);
         sigprocmask(SIG_SETMASK,&mask,nullptr);
-        if (setsid() < 0 || dup2(null.get(),0) < 0 || dup2(log_fd,1) < 0 || dup2(log_fd,2) < 0) _exit(125);
-        if (display_fd >= 0 && (dup2(display_fd,3) < 0 || fcntl(3,F_SETFD,0) < 0)) _exit(125);
+        if (prctl(PR_SET_PDEATHSIG,SIGTERM) != 0 || getppid() != parent || prctl(PR_SET_NO_NEW_PRIVS,1,0,0,0) != 0) _exit(125);
+        if (setsid() < 0 || dup2(child_input.get(),0) < 0 || dup2(child_log.get(),1) < 0 || dup2(child_log.get(),2) < 0) _exit(125);
+        if (display_fd >= 0 && dup2(child_display.get(),3) < 0) _exit(125);
         if (syscall(SYS_close_range,display_fd >= 0 ? 4U : 3U,~0U,0) < 0) _exit(125);
         execve(argv[0],argv.data(),envp.data()); _exit(127);
     }
@@ -62,4 +71,5 @@ void ChildProcess::stop() noexcept {
     kill(-pid_,SIGKILL); kill(pid_,SIGKILL);
     while (waitpid(pid_,nullptr,0) < 0 && errno == EINTR) {}
     pid_ = -1;
+}
 }

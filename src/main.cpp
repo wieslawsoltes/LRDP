@@ -1,5 +1,8 @@
 #include "lrdp/session.hpp"
 #include "lrdp/transport.hpp"
+#ifdef LRDP_HAVE_HEADLESS
+#include "lrdp/platform/headless_desktop.hpp"
+#endif
 #ifdef LRDP_HAVE_GSSAPI
 #include "lrdp/security/nla_transport.hpp"
 #endif
@@ -34,14 +37,18 @@ struct Configuration {
     bool laboratory = false, nla = false, allow_ntlm = false, once = false, graphics = true;
     VideoOptions video;
     AudioOptions audio;
+#ifdef LRDP_HAVE_HEADLESS
+    HeadlessOptions headless;
+#endif
 };
 void usage() {
     std::cout << "LRDP native Linux remote desktop server\n"
               << "  --cert FILE --key FILE\n"
               << "  --auth nla --service TERMSRV@host.example.org --allow-principal user@REALM\n"
               << "  [--allow-ntlm] [--listen 127.0.0.1] [--port 3389] [--max-sessions 4]\n"
-              << "  [--backend demo|x11|portal] [--display :0] [--fps 30] [--once]\n"
+              << "  [--backend demo|x11|portal|headless] [--display :0] [--fps 30] [--once]\n"
               << "  [--gfx auto|off] [--encoder auto|software|vaapi|nvenc|raw] [--device /dev/dri/renderD128]\n"
+              << "  [--desktop-command /absolute/executable] [--desktop-arg ARG] [--xorg-executable /absolute/Xorg]\n"
               << "  [--audio] [--microphone]  Publish per-session virtual PipeWire devices.\n"
               << "  --allow-principal can be repeated; matching is exact and case-sensitive.\n"
               << "  Alternatively: --lab-no-auth (loopback-only, no user authentication).\n"
@@ -54,6 +61,11 @@ Configuration parse(int argc, char** argv) {
         auto value = [&]() -> std::string { require(i + 1 < argc, "missing option value"); return argv[++i]; };
         if (option == "--cert") c.certificate = value(); else if (option == "--key") c.key = value();
         else if (option == "--backend") c.backend = value(); else if (option == "--display") c.display = value();
+#ifdef LRDP_HAVE_HEADLESS
+        else if (option == "--desktop-command") c.headless.command = {value()};
+        else if (option == "--desktop-arg") c.headless.command.push_back(value());
+        else if (option == "--xorg-executable") c.headless.xorg = value();
+#endif
         else if (option == "--listen") c.listen = value(); else if (option == "--port") c.port = number(value(), 65535);
         else if (option == "--fps") c.fps = number(value(), 120);
         else if (option == "--max-sessions") c.max_sessions = number(value(), 64);
@@ -73,7 +85,10 @@ Configuration parse(int argc, char** argv) {
     require(!c.laboratory || c.listen == "127.0.0.1" || c.listen == "::1", "unauthenticated laboratory access must remain on loopback");
     require(!c.nla || (!c.service.empty() && !c.principals.empty()), "NLA requires a service identity and allowed principal");
     require(c.nla || (!c.allow_ntlm && c.service.empty() && c.principals.empty()), "authentication options are invalid in laboratory mode");
-    require(c.backend == "demo" || c.backend == "x11" || c.backend == "portal", "unknown desktop backend");
+    require(c.backend == "demo" || c.backend == "x11" || c.backend == "portal" || c.backend == "headless", "unknown desktop backend");
+#ifndef LRDP_HAVE_HEADLESS
+    require(c.backend != "headless", "this build has no headless Xorg support");
+#endif
 #ifndef LRDP_HAVE_GSSAPI
     require(!c.nla, "this build has no system GSSAPI support");
 #endif
@@ -128,6 +143,9 @@ int serve(int fd, TlsContext& context, const Configuration& c, const VideoFactor
 #endif
 #ifdef LRDP_HAVE_PORTAL
         if (c.backend == "portal") desktop = make_portal_desktop();
+#endif
+#ifdef LRDP_HAVE_HEADLESS
+        if (c.backend == "headless") desktop = make_headless_desktop(c.headless);
 #endif
         if (c.backend == "demo") desktop = make_demo_desktop();
         require(desktop != nullptr, "selected desktop backend unavailable");

@@ -1,4 +1,5 @@
 #include "lrdp/desktop.hpp"
+#include "lrdp/platform/x11_managed.hpp"
 #include "lrdp/platform/shared_library.hpp"
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
@@ -83,6 +84,7 @@ class X11Desktop final : public Desktop {
     Atom clipboard_ = 0, utf8_ = 0, targets_ = 0, timestamp_ = 0, property_ = 0, incr_ = 0, clock_ = 0;
     int screen_ = 0, selection_event_ = 0;
     Layout layout_;
+    X11Resize resize_;
     std::set<unsigned> pressed_keys_, pressed_buttons_;
     int wheel_ = 0, horizontal_wheel_ = 0;
     Time ownership_time_ = 0;
@@ -233,8 +235,8 @@ class X11Desktop final : public Desktop {
         button_(d(), button, down ? True : False, CurrentTime);
     }
 public:
-    explicit X11Desktop(const std::string& name)
-        : display_(XOpenDisplay(name.empty() ? nullptr : name.c_str())), errors_(display_.get()) {
+    explicit X11Desktop(const std::string& name, X11Resize resize = {})
+        : display_(XOpenDisplay(name.empty() ? nullptr : name.c_str())), errors_(display_.get()), resize_(std::move(resize)) {
         require(d() != nullptr, "cannot open X11 display; check DISPLAY and Xauthority");
         screen_ = DefaultScreen(d()); root_ = RootWindow(d(), screen_);
         int event = 0, error = 0, major = 0, minor = 0;
@@ -260,8 +262,15 @@ public:
         display_.reset();
     }
     Layout layout() const override { return layout_; }
-    bool resizable() const override { return false; } // Sharing a physical desktop is not a virtual-monitor API.
-    bool resize(const Layout&) override { return false; }
+    bool resizable() const override { return bool(resize_); }
+    bool resize(const Layout& requested) override {
+        if (!resize_) return false;
+        auto next = validate_layout(requested.monitors);
+        if (next.monitors == layout_.monitors) return true;
+        release_input();
+        if (!resize_(d(), next)) return false;
+        layout_ = std::move(next); return true;
+    }
     Frame capture() override {
         events();
         XWindowAttributes attributes{};
@@ -346,4 +355,8 @@ public:
 };
 } // namespace
 std::unique_ptr<Desktop> make_x11_desktop(const std::string& display) { return std::make_unique<X11Desktop>(display); }
+std::unique_ptr<Desktop> make_managed_x11_desktop(const std::string& display, X11Resize resize) {
+    require(bool(resize), "managed X11 requires an output controller");
+    return std::make_unique<X11Desktop>(display, std::move(resize));
+}
 } // namespace lrdp
