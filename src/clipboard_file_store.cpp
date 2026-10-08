@@ -37,7 +37,9 @@ UniqueFd parent_of(int root, const std::string& path) {
 }
 std::string leaf(const std::string& name) { return name.substr(name.find_last_of('/') + 1); }
 std::vector<std::string> entries(int fd, std::size_t maximum) {
-    auto copy = duplicate(fd); Directory dir(fdopendir(copy.release())); require(bool(dir), "cannot enumerate clipboard directory");
+    auto copy = duplicate(fd);
+    DIR* raw = fdopendir(copy.get()); require(raw != nullptr, "cannot enumerate clipboard directory");
+    (void)copy.release(); Directory dir(raw);
     // dup shares directory offset: callers enumerate a directory only once.
     std::vector<std::string> result; errno = 0;
     while (auto* entry = readdir(dir.get())) {

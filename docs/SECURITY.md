@@ -22,6 +22,14 @@ Each connection has its own child process, created before opening platform or en
 
 The parent owns its child process list and terminates only those children at shutdown. A stalled driver can still require forced termination; no claim of hard real-time driver cancellation is made.
 
+## Private Xorg and file redirection
+
+The headless backend creates a separate rootless X server with a per-session authentication cookie and no TCP listener. Its application/session process still has the server account's Unix permissions; this is not a filesystem sandbox, separate Unix login or PAM broker.
+
+File clipboard is off by default. `--clipboard-files DIRECTORY` restricts exported selections and received staging to an existing user-owned directory without group/other write permission. Source paths are resolved by directory descriptors without following symlinks; only pinned regular files/directories are read. Incoming paths are validated before filesystem creation, received files are mode 0600, and clipboard publication requires complete range coverage. Source files are never deleted and remote files are never executed.
+
+Ordinary session cleanup removes received staging, not user source files. Crashes/forced termination can leave private staging and require inspection after sessions have ended. A process with the same Unix identity is outside this confinement threat model. See [FILE_CLIPBOARD.md](FILE_CLIPBOARD.md) for exact quotas, synchronous-I/O limitations and lifetime.
+
 ## Normative sources
 
 - MS-CSSP 2.2 and 3.1.1: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-cssp/385a7489-d46b-464c-b224-f7340e308a5c

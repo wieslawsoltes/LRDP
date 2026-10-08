@@ -2,18 +2,15 @@
 
 LRDP is an experimental specification-derived native Linux RDP server. Windows feature parity is the goal, not the current implementation status. No proprietary or other RDP implementation source is incorporated in the wire stack. System OpenSSL, GSSAPI, X11, GLib/GIO, PipeWire and FFmpeg remain legitimate dependencies. This is a provenance description, not a legal clean-room certification.
 
-## Verified revision
+## Verified revisions
 
-Commit `c96bce01757a91dc0d97b55a9005145dcf5abe5e` passed GitHub Actions run `37810505403`, job `113425821732`:
+Code revision `b3c4cea5023c7cd96fe787a8b6daf53161afb533` passed [GitHub Actions run 37832552839](https://github.com/wieslawsoltes/LRDP/actions/runs/37832552839), job `113501303408`. Its archived JUnit report contains 25 registered suites: 24 passed and one was explicitly skipped. Debug ASan/UBSan, optimized Release and protocol-only builds succeeded. All eight protocol-only suites passed. The matching local sanitizer build passed all 17 suites available with the locally installed dependencies, including private Xorg and native file paste.
 
-- Debug AddressSanitizer/UndefinedBehaviorSanitizer build.
-- 17 registered test suites: 16 passed, one explicitly skipped.
-- Optimized Release build.
-- Protocol-only Release build and all five dependency-free suites.
+The skipped suite is `client_avc420`: the installed Ubuntu FreeRDP executable lacks AVC420 support. A skip is not a passing interoperability result. The native FFmpeg software encoder/decoder and color oracle passed separately. Windows file-clipboard interoperability and physical GPU execution remain unverified.
 
-The skipped suite is `client_avc420`: the installed Ubuntu FreeRDP executable lacks AVC420 support. A skip is not a passing interoperability result. The native FFmpeg software encoder/decoder and color oracle passed separately. Evidence: https://github.com/wieslawsoltes/LRDP/actions/runs/37810505403
+Earlier baseline revision `c96bce01757a91dc0d97b55a9005145dcf5abe5e` passed [run 37810505403](https://github.com/wieslawsoltes/LRDP/actions/runs/37810505403) with 16 passing suites and one codec-client skip. PR #1 has been merged; subsequent headless, monitor, cursor and file work is tracked in PR #2.
 
-This result applies to the recorded revision. Consult exact-revision CI checks for later changes.
+Evidence applies to the recorded code revision, not automatically to later changes. CI archives the exact source revision, JUnit results, test log and Release executable.
 
 ## Implemented in this development iteration
 
@@ -25,7 +22,7 @@ The independent FreeRDP/system-GSS test verifies a rendered desktop after author
 
 Each ordinary connection runs in its own child process, created before native resources and worker threads. The listener bounds concurrent sessions and owns child shutdown. Desktop resources are not opened before successful authentication in NLA mode.
 
-This is authenticated sharing of the server account's desktop, not a PAM login broker. No Unix impersonation or independent user-session creation is implemented. Actual Kerberos-domain and Windows-client interoperability are not yet recorded.
+This is authenticated sharing of the server account's desktop, not a PAM login broker. No Unix impersonation or PAM login-session creation is implemented. The headless backend creates a separate X server/application process tree under the existing server account. Actual Kerberos-domain and Windows-client interoperability are not yet recorded.
 
 ### Wayland and clipboard
 
@@ -35,7 +32,23 @@ Clipboard redirection is enabled only when the portal grants Clipboard access. F
 
 The private D-Bus portal test exercises actual public API calls and Unix descriptor passing, early response ordering, input methods, bidirectional 180 KiB text, permission denial, revocation and cleanup. Buffer-layout tests validate pitch, crop, color conversion and allocation bounds. Native PipeWire capture compiles, but no real GNOME/Plasma compositor consent/capture session has been verified.
 
-Existing physical X11 and portal backends do not create virtual monitors. DisplayControl resizing remains implemented end-to-end on the diagnostic desktop only. A native virtual/headless desktop backend is still required for independent client-sized Linux sessions.
+Existing physical X11 and portal backends do not create virtual monitors. The private headless backend now applies DisplayControl resizing to real Xorg outputs, as described below.
+
+### Private desktops, initial topology and native cursor
+
+`--backend headless` starts rootless Xorg with the dummy driver, a random private Xauthority cookie, no TCP listener, a dedicated runtime directory, and an explicitly selected application/session command. Direct argument-vector execution, close-on-exec descriptors, process-group ownership and startup/shutdown deadlines bound the subprocess lifecycle. The native desktop shares the server's Unix identity and filesystem privileges: it is not a container or login broker.
+
+RandR changes are validated and applied transactionally, with rollback on failure and retirement of old custom modes. Initial client monitor topology and attributes are parsed; active layouts are sent during activation. Tests cover negative monitor origins, framebuffer dimensions, 20 mode changes, rejection of unauthenticated X clients and the same application surviving three RDP resize/reactivation cycles with working input and clipboard.
+
+Native XFixes cursor shapes now reach the client through negotiated alpha/legacy pointer updates and a bounded exact LRU. Hidden cursors, masks, scanline order and hotspots have pixel-level tests. Large Pointer is not advertised; native shapes exceeding 32 x 32 are scaled.
+
+### Opt-in file clipboard
+
+`--clipboard-files DIRECTORY` enables file and directory transfer on X11/headless backends. A confined native store pins selected source inodes, rejects special files/symlinks and observed source mutation, and writes received data to private non-executable staging. Native `text/uri-list` and GNOME copied-files selections bridge file-manager copy/paste to FileGroupDescriptorW and FileContents messages.
+
+The protocol engine supports format-ID mapping, locks, unknown sizes, bounded parallel ranges, short/out-of-order responses, cancellation and inactivity deadlines. The real TLS/private-Xorg integration test exports 180,003 bytes and imports 200,007 bytes that an independent native application pastes and checks. It also verifies Unicode filenames, empty files/directories, graphics suppression, traversal rejection, cursor hotspots and staging cleanup. Windows-client file interoperability has not been recorded.
+
+Received staging is session-scoped and removed on orderly cleanup. Forced termination may leave private staging. Defaults are 128 descriptors, 256 MiB retained receive data, four 64 KiB reads and a 30-second inactivity timeout; the native store additionally caps retained receive transactions at 16. See [file clipboard details](FILE_CLIPBOARD.md).
 
 ### Native audio
 
@@ -60,10 +73,11 @@ Ubuntu/Debian development dependencies:
 ```sh
 sudo apt-get install \
   cmake ninja-build g++ pkg-config libssl-dev libkrb5-dev \
-  libx11-dev libxtst-dev libxfixes-dev \
+  libx11-dev libxtst-dev libxfixes-dev libxrandr-dev \
   libglib2.0-dev libpipewire-0.3-dev \
   libavcodec-dev libavutil-dev libswscale-dev \
-  python3 xvfb freerdp2-x11 gss-ntlmssp dbus-daemon pipewire-bin
+  python3 xvfb xserver-xorg-core xserver-xorg-video-dummy xterm \
+  freerdp2-x11 gss-ntlmssp dbus-daemon pipewire-bin
 
 cmake -S . -B build -G Ninja \
   -DCMAKE_BUILD_TYPE=Debug \
@@ -83,7 +97,7 @@ cmake --build build-core --parallel
 ctest --test-dir build-core --output-on-failure
 ```
 
-Optional native integrations are controlled by `LRDP_X11`, `LRDP_PORTAL`, `LRDP_AUDIO`, `LRDP_GSSAPI` and `LRDP_FFMPEG`.
+Run native headless tests as a non-root user. Optional native integrations are controlled by `LRDP_HEADLESS`, `LRDP_X11`, `LRDP_PORTAL`, `LRDP_AUDIO`, `LRDP_GSSAPI` and `LRDP_FFMPEG`.
 
 ## Local laboratory
 
@@ -128,8 +142,8 @@ Run as the desktop's Unix user, not root. `--allow-principal` is repeatable and 
 
 ## Remaining scope — not implemented
 
-- Native virtual/headless desktop and PAM/session broker, client-driven resizing of actual Linux virtual outputs, full compositor-backed multimonitor management.
-- Clipboard files/images/HTML; RDPDR drives, printers, serial/parallel, USB, smart cards and cameras.
+- PAM/Unix user-session broker, native Wayland virtual/headless compositor outputs, full compositor-backed multimonitor management and backend/hardware conformance.
+- Wayland portal file clipboard, clipboard images/HTML, Windows file-client validation; RDPDR drives, printers, serial/parallel, USB, smart cards and cameras.
 - AVC444, progressive/RemoteFX codecs, advanced caches and zero-copy DMA-BUF/GPU conversion.
 - RemoteApp/RAIL, UDP multitransport, gateway transport, network autodetection, persistent reconnection and session brokerage.
 - Full touch/pen/gesture, keyboard-layout/IME parity and compressed audio/UDP-audio profiles.

@@ -64,7 +64,8 @@ int main(int argc,char** argv) {
                 Atom type=None; int format=0; unsigned long n=0,after=0; unsigned char* data=nullptr;
                 if(XGetWindowProperty(d,window,property,0,16384,True,AnyPropertyType,&type,&format,&n,&after,&data)!=Success) throw std::runtime_error("paste read failed");
                 std::string text(reinterpret_cast<char*>(data),n); XFree(data);
-                if(type!=uri || format!=8 || after) throw std::runtime_error("invalid paste property"); verify(text,log);
+                if(type!=uri || format!=8 || after) throw std::runtime_error("invalid paste property");
+                verify(text,log);
             } else if(event.type==SelectionRequest) {
                 const auto& r=event.xselectionrequest; XEvent reply{}; auto& v=reply.xselection;
                 v.type=SelectionNotify; v.display=d; v.requestor=r.requestor; v.selection=r.selection; v.target=r.target; v.time=r.time;
