@@ -13,7 +13,8 @@ void Session::tick(bool transport_ready, bool capture_due) {
     if (display_ && display_->commit([&](const Layout& layout) { return desktop_->resize(layout); })) { reactivate(); return; }
     if (suppressed_) return;
     if (!desktop_->embedded_cursor()) if (const auto shape = desktop_->pointer_shape())
-        if (auto update = pointer_.update(*shape)) send_global(share_data(27, *update));
+        if (auto update = pointer_.update(*shape))
+            for (auto& packet : update->packets(pointer_.max_request())) outbound_.push_back(std::move(packet));
     if (graphics_requested_ && graphics_.ready()) {
         if (graphics_reset_) { graphics_.reset(active_layout_); graphics_reset_ = false; flush_graphics(); }
         if (!graphics_.can_send()) return;
