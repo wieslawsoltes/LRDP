@@ -1,0 +1,6 @@
+target_sources(lrdp_protocol PRIVATE src/drive_wire.cpp src/drive_protocol.cpp)
+if(BUILD_TESTING)
+  add_executable(lrdp_drive_protocol_tests tests/drive_protocol_tests.cpp)
+  target_link_libraries(lrdp_drive_protocol_tests PRIVATE lrdp_protocol)
+  add_test(NAME drive_protocol COMMAND lrdp_drive_protocol_tests)
+endif()
