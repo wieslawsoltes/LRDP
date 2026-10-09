@@ -13,12 +13,12 @@ public:
     unsigned count() const { return count_; }
 };
 }
-Bytes demand_active(std::uint16_t width, std::uint16_t height, std::uint16_t depth, bool resize, bool unicode_input) {
+Bytes demand_active(std::uint16_t width, std::uint16_t height, std::uint16_t depth, bool resize, bool unicode_input, bool reconnect) {
     Capabilities caps;
     // MS-RDPBCGR 2.2.7.1.1: exactly 20 payload bytes. Both one-byte
     // refresh/suppress support fields immediately follow compressionLevel.
     Writer general; general.le16(4).le16(0).le16(0x200).le16(0)
-        .le16(0).le16(1).le16(0).le16(0).le16(0).u8(1).u8(1);
+        .le16(0).le16(reconnect ? 9 : 1).le16(0).le16(0).le16(0).u8(1).u8(1);
     caps.add(1,general);
     Writer fragments; fragments.le32(608299); caps.add(26, fragments);
     Writer large; large.le16(3); caps.add(27, large);

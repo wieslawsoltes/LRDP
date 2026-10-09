@@ -1,5 +1,6 @@
 #pragma once
 #include "display.hpp"
+#include "reconnect.hpp"
 #include "pointer.hpp"
 #include "clipboard/rich_content.hpp"
 #include "input/extended.hpp"
@@ -16,6 +17,7 @@ struct InputEvent { InputKind kind; std::uint16_t flags = 0, code = 0, x = 0, y 
 class Desktop {
 public:
     virtual ~Desktop() = default;
+    virtual ReconnectService* reconnection() { return nullptr; }
     // Always called, even with output suppressed or no clipboard channel joined.
     virtual void pump() {}
     virtual Layout layout() const = 0;

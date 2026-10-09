@@ -80,7 +80,7 @@ struct RandrOutputs::Impl {
     std::uint64_t generation = 0;
     auto resources(Display* d, Window root) {
         std::unique_ptr<Resources, Free> value(GetScreenResources(d,root), FreeScreenResources);
-        require(value && value->ncrtc > 0 && value->ncrtc <= 64 && value->noutput > 0 && value->noutput <= 64,
+        require(value && value->ncrtc > 0 && value->ncrtc <= 64 && value->noutput > 0 && value->noutput <= 64 && value->nmode >= 0 && value->nmode <= 4096,
                 "invalid or unavailable RandR resources");
         return value;
     }
@@ -90,7 +90,9 @@ struct RandrOutputs::Impl {
             const_cast<Output*>(c.outputs.data()),int(c.outputs.size())) == RRSetConfigSuccess;
     }
     void discard(Display* d, const std::vector<OwnedMode>& modes) {
-        for (const auto& m : modes) { DeleteOutputMode(d,m.output,m.mode); DestroyMode(d,m.mode); }
+        std::set<Mode> ids;
+        for (const auto& m : modes) { DeleteOutputMode(d,m.output,m.mode); ids.insert(m.mode); }
+        for (const auto id : ids) DestroyMode(d,id);
     }
     bool apply(Display* d, const Layout& supplied) {
         const auto layout = validate_layout(supplied.monitors);
@@ -115,17 +117,41 @@ struct RandrOutputs::Impl {
         }
         // Reject even an otherwise valid layout on non-private hardware.
         std::vector<Output> outputs;
+        std::vector<OwnedMode> retired;
+        std::set<std::string> names;
+        std::set<Mode> private_modes;
+        for (int i=0;i<r->nmode;++i) {
+            const auto& mode=r->modes[i];
+            require(mode.name && mode.nameLength<=256,"invalid RandR mode name");
+            const std::string name(mode.name,mode.nameLength); names.insert(name);
+            // Reserved server-generated names on already-validated private DUMMY outputs.
+            if (name.starts_with("LRDP-") && name.size()>5 &&
+                std::all_of(name.begin()+5,name.end(),[](char c){return (c>='0' && c<='9') || c=='-';}))
+                private_modes.insert(mode.id);
+        }
         for (int i = 0; i < r->noutput; ++i) {
             std::unique_ptr<OutputInfo,FreeOutput> o(GetOutputInfo(d,r.get(),r->outputs[i]),FreeOutputInfo);
             require(o && o->nameLen > 0 && o->nameLen <= 64,"invalid RandR output");
             require(std::string_view(o->name,std::size_t(o->nameLen)).starts_with("DUMMY"), "refusing to resize non-dummy outputs");
+            require(o->nmode>=0 && o->nmode<=4096,"invalid RandR output mode count");
+            for (int j=0;j<o->nmode;++j) if (private_modes.contains(o->modes[j]))
+                retired.push_back({o->modes[j],r->outputs[i]});
             outputs.push_back(r->outputs[i]);
         }
         if (layout.monitors.size() > outputs.size()) return false;
         std::vector<OwnedMode> created; created.reserve(layout.monitors.size());
         std::set<Crtc> used; bool changed = false; Output primary = None;
         try {
-            ++generation;
+            // A new RDP worker may attach to an Xorg kept alive by the broker.
+            // Its local generation starts at zero but the server's modes survive.
+            for (unsigned attempt=0;attempt<=4096;++attempt) {
+                require(generation!=UINT64_MAX,"RandR mode generation exhausted"); ++generation;
+                bool collision=false;
+                for (std::size_t i=0;i<layout.monitors.size();++i)
+                    collision |= names.contains("LRDP-"+std::to_string(generation)+"-"+std::to_string(i));
+                if (!collision) break;
+                require(attempt<4096,"RandR mode namespace exhausted");
+            }
             for (std::size_t i = 0; i < layout.monitors.size(); ++i) {
                 const auto& m = layout.monitors[i];
                 const Rotation rotation = m.orientation == 90 ? RR_Rotate_90 : m.orientation == 180 ? RR_Rotate_180 :
@@ -171,7 +197,7 @@ struct RandrOutputs::Impl {
             discard(d,created); (void)errors.ok();
             require(restored,"headless display rollback failed; closing session"); return false;
         }
-        discard(d,owned); (void)errors.ok(); owned = std::move(created); return true;
+        discard(d,retired); (void)errors.ok(); owned = std::move(created); return true;
     }
 };
 RandrOutputs::RandrOutputs() : impl_(std::make_unique<Impl>()) {}
