@@ -1,6 +1,7 @@
 #pragma once
 #include "desktop.hpp"
 #include "avc444.hpp"
+#include "lossless.hpp"
 #include <chrono>
 #include <deque>
 
@@ -18,6 +19,7 @@ struct GraphicsQoe {
 
 class Graphics {
     using Clock = std::chrono::steady_clock;
+    LosslessEncoder lossless_;
     bool negotiated_ = false, video_enabled_ = false, surface_ = false;
     VideoCodec codec_ = VideoCodec::avc420;
     std::uint32_t capability_version_ = 0;
@@ -37,6 +39,9 @@ public:
     bool receive(View message, bool video_available);
     void reset(const Layout& layout);
     void raw_frame(const Frame& frame);
+    void lossless_frame(const Frame& frame);
+    void invalidate_lossless() { lossless_.invalidate(); }
+    const LosslessStatistics& lossless_statistics() const { return lossless_.statistics(); }
     void video_frame(View annex_b, unsigned width, unsigned height, unsigned qp = 22);
     void video_frame(const EncodedVideo& frame);
     [[nodiscard]] const std::optional<GraphicsQoe>& latest_qoe() const { return qoe_; }
