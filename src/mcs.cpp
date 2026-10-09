@@ -94,7 +94,9 @@ Bytes connect_response(const ClientSettings& settings, std::uint32_t requested_p
     for (auto id : settings.channel_ids) net.le16(id);
     if (settings.channel_ids.size() & 1) net.le16(0);
     block(blocks, 0x0c03, net);
-    if (settings.message_channel_requested || settings.message_channel) {
+    require(settings.message_channel == 0 || settings.message_channel_requested,
+            "cannot send an unrequested Server Message Channel Data block");
+    if (settings.message_channel_requested) {
         require(settings.message_channel == 0 ||
                 (settings.message_channel > global_channel &&
                  std::find(settings.channel_ids.begin(), settings.channel_ids.end(), settings.message_channel) == settings.channel_ids.end()),

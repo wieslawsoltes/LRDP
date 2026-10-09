@@ -29,6 +29,18 @@ void test() {
     auto parsed=connect_initial(parse_x224_data(bytes),1);
     check(parsed.early_caps==0x80 && parsed.message_channel_requested && parsed.channel_ids.size()==2,"message field independent of block order");
     parsed.message_channel=1004;rejects([&]{(void)connect_response(parsed,1);});
+    parsed.message_channel=1006;parsed.message_channel_requested=false;
+    rejects([&]{(void)connect_response(parsed,1);});
+    // Replace only the optional block's type with an unknown, length-delimited
+    // extension. The Client Core capability remains set and all lengths remain valid.
+    auto no_request=bytes;no_request[std::size_t(position-bytes.begin())]=0xff;
+    Session unrequested(make_demo_desktop(),1,1,{},false);unrequested.configure_network_metrics();
+    unrequested.receive(no_request);
+    check(!unrequested.settings().message_channel_requested && !unrequested.settings().message_channel &&
+          !unrequested.network_metrics(),"Client Core alone cannot allocate an unrequested message channel");
+    Session disabled(make_demo_desktop(),1,1,{},false);disabled.receive(bytes);
+    check(disabled.settings().message_channel_requested && !disabled.settings().message_channel &&
+          !disabled.network_metrics(),"explicit channel request cannot bypass server opt-in policy");
     Session s(make_demo_desktop(),1,1,{},false);s.configure_network_metrics();
     s.receive(bytes);check(s.settings().message_channel==1006,"dedicated channel allocated after static channels");
     rejects([&]{s.configure_network_metrics();});

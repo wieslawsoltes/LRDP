@@ -7,9 +7,10 @@ void Session::configure_network_metrics(NetworkPolicy policy) {
     network_policy_ = policy;
 }
 void Session::negotiate_network() {
-    if (network_policy_ && (settings_.early_caps & 0x0080)) {
+    if (network_policy_ && settings_.message_channel_requested && (settings_.early_caps & 0x0080)) {
         // The message channel is not included in SC_NET's static-channel array.
-        // CS_MCS_MSGCHANNEL is not required when Client Core advertises netchar.
+        // MS-RDPBCGR 2.2.1.4 forbids SC_MCS_MSGCHANNEL without the explicit
+        // clientMessageChannelData block, even when Client Core advertises netchar.
         settings_.message_channel = std::uint16_t(global_channel + 1 + settings_.channel_ids.size());
         network_.emplace(settings_.message_channel, *network_policy_);
     }

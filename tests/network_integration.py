@@ -43,7 +43,7 @@ def mcs_body(packet: bytes) -> tuple[int, bytes] | None:
     return channel, packet[offset:]
 
 
-def response_channels(packet: bytes, expected_count: int) -> tuple[list[int], int]:
+def response_channels(packet: bytes, expected_count: int, requested_channel: bool) -> tuple[list[int], int]:
     # Parse complete response block boundaries, not a presumed channel offset.
     marker = packet.index(b'McDn') + 4
     n = packet[marker]; marker += 1
@@ -66,6 +66,7 @@ def response_channels(packet: bytes, expected_count: int) -> tuple[list[int], in
             message, = struct.unpack('<H', body)
         marker += size
     assert {0xc01, 0xc02, 0xc03}.issubset(seen)
+    assert (0xc04 in seen) == requested_channel, "server emitted an unsolicited message block or omitted its refusal"
     assert not message or message not in static + [1001, 1002, 1003]
     return static, message
 
@@ -121,7 +122,7 @@ class NetworkClient(Client):
 
     def connect(self, netchar=True, request_channel=True, expected_channel=True, count=2, before_activation=False):
         self.stream.sendall(connect_initial(netchar, request_channel, count))
-        channels, self.message_channel = response_channels(self.recv_packet(), count)
+        channels, self.message_channel = response_channels(self.recv_packet(), count, request_channel)
         assert bool(self.message_channel) == expected_channel
         if self.message_channel:
             assert self.message_channel == 1004 + count
@@ -145,9 +146,9 @@ def run(binary: pathlib.Path) -> None:
         cert, key = root / 'cert.pem', root / 'key.pem'
         subprocess.run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-days','1','-subj','/CN=localhost',
                         '-addext','subjectAltName=DNS:localhost','-keyout',str(key),'-out',str(cert)], check=True, capture_output=True)
-        # CLI opt-in and explicit peer support are independently required.
+        # Server policy, Client Core support and the explicit CS message block are all required.
         scenarios = [(True,True,True,2,False), (False,True,True,2,False), (True,False,True,2,False),
-                     (True,True,False,31,False), (True,True,True,2,True)]
+                     (True,True,False,2,False), (True,True,True,31,False), (True,True,True,2,True)]
         for index, (enabled, netchar, request_channel, count, early) in enumerate(scenarios):
             with socket.socket() as reservation:
                 reservation.bind(('127.0.0.1',0)); port = reservation.getsockname()[1]
@@ -164,7 +165,7 @@ def run(binary: pathlib.Path) -> None:
                         assert server.poll() is None and time.monotonic() < deadline, 'server startup failed'
                         time.sleep(0.02)
                     client = NetworkClient(socket.create_connection(('127.0.0.1',port)),cert)
-                    client.connect(netchar,request_channel,enabled and netchar,count,early)
+                    client.connect(netchar,request_channel,enabled and netchar and request_channel,count,early)
                     if early:
                         try:
                             client.recv_packet()
@@ -173,7 +174,7 @@ def run(binary: pathlib.Path) -> None:
                     else:
                         client.until(lambda: len(client.pixel_coverage) == 40)
                         assert client.pixels[:3] == bytes([100,60,30])
-                        if enabled and netchar:
+                        if enabled and netchar and request_channel:
                             client.until(lambda: client.rtt_requests >= 1 and client.bandwidth_requests >= 1)
                             if index == 0:
                                 client.send_share(35, bytes(4))
