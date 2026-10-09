@@ -4,6 +4,7 @@ void Session::invalidate_graphics() { ++graphics_generation_; previous_graphics_
 void Session::flush_graphics() { for (const auto& packet : graphics_.drain()) send_dynamic(2, packet); }
 void Session::tick(bool transport_ready, bool capture_due) {
     desktop_->pump();
+    synchronize_extended();
     if (!active()) return;
     tick_audio(); // Audio continues while graphics are suppressed or backpressured.
     tick_clipboard();

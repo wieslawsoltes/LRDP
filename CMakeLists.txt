@@ -112,3 +112,5 @@ endif()
 include(cmake/LrdpRichClipboard.cmake)
 
 include(cmake/LrdpWaylandClipboard.cmake)
+
+include(cmake/LrdpExtendedInput.cmake)

@@ -67,11 +67,12 @@ void Session::share_packet(View payload) {
         Writer font; font.le16(0).le16(0).le16(3).le16(4); send_global(share_data(40, font.bytes()));
         Writer pointer; pointer.le16(1).le16(0).le32(desktop_->embedded_cursor() ? 0 : 0x7f00); send_global(share_data(27, pointer.bytes()));
         phase_ = SessionPhase::active;
+        synchronize_extended();
         if (!channels_started_) {
             channels_started_ = true;
             if (clipboard_channel_) for (const auto& pdu : clipboard_.start()) send_channel(*clipboard_channel_, pdu);
             start_audio();
-            if (dynamic_channel_ && ((desktop_->resizable() && client_resize_) || graphics_requested_ || audio_dynamic_needed()))
+            if (dynamic_channel_ && ((desktop_->resizable() && client_resize_) || graphics_requested_ || audio_dynamic_needed() || desktop_->extended_capabilities().touches))
                 send_channel(*dynamic_channel_, DynamicChannels::capabilities());
         }
         break;
@@ -84,7 +85,8 @@ void Session::share_packet(View payload) {
     case 35: {
         const auto allow = data.u8(); require(allow <= 1, "invalid Suppress Output flag"); data.skip(3);
         if (allow) { data.skip(8); invalidate_graphics(); } data.end(); suppressed_ = !allow;
-        if (suppressed_) desktop_->release_input();
+        if (suppressed_) release_all_input();
+        synchronize_extended();
         break;
     }
     case 36: send_global(share_data(37, {})); break;

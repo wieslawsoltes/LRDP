@@ -2,6 +2,7 @@
 #include "display.hpp"
 #include "pointer.hpp"
 #include "clipboard/rich_content.hpp"
+#include "input/extended.hpp"
 #include <memory>
 
 namespace lrdp {
@@ -20,6 +21,9 @@ public:
     virtual Layout layout() const = 0;
     virtual bool resizable() const = 0;
     virtual bool unicode_input() const { return false; }
+    virtual ExtendedCapabilities extended_capabilities() const { return {}; }
+    virtual void extended_input(const std::vector<ExtendedFrame>&) { throw ProtocolError("backend has no digitizer"); }
+    virtual void cancel_extended_input() {}
     virtual bool clipboard_available() const { return true; }
     virtual bool embedded_cursor() const { return false; }
     virtual bool enable_rich_clipboard() { return false; }

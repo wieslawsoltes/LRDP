@@ -65,7 +65,7 @@ struct PortalSession::Impl : MimeClipboardTransport {
     std::vector<guint> subscriptions;
     struct AsyncState { unsigned pending = 0; bool failed = false, stopping = false; };
     std::shared_ptr<AsyncState> async = std::make_shared<AsyncState>();
-    bool closed = false, clipboard_enabled = false;
+    bool closed = false, clipboard_enabled = false, touch_enabled = false;
     MimeClipboard mime{*this};
     bool rich_enabled = false, files_enabled = false;
     std::optional<std::string> ready_text;
@@ -156,7 +156,7 @@ struct PortalSession::Impl : MimeClipboardTransport {
         require(reply.code == 0, "portal request was cancelled or denied"); return std::move(reply.result);
     }
     void enqueue(const char* iface, const char* method, GVariant* parameters) {
-        check(); require(async->pending < 256, "portal asynchronous operation queue is full");
+        check(); require(async->pending < 2048, "portal asynchronous operation queue is full");
         auto* retained = new std::shared_ptr<AsyncState>(async); ++async->pending;
         g_dbus_connection_call(bus.get(), owner.c_str(), object, iface, method, parameters, G_VARIANT_TYPE_UNIT,
             G_DBUS_CALL_FLAGS_NONE, 3000, cancel.get(),
@@ -217,7 +217,8 @@ struct PortalSession::Impl : MimeClipboardTransport {
             [](GDBusConnection*, const gchar*, const gchar*, const gchar*, const gchar*, GVariant*, gpointer data) {
                 static_cast<Impl*>(data)->closed = true;
             }, this, nullptr));
-        require((property(remote, "AvailableDeviceTypes") & 3) == 3, "portal does not provide keyboard and pointer control");
+        const auto available_devices = property(remote, "AvailableDeviceTypes");
+        require((available_devices & 3) == 3, "portal does not provide keyboard and pointer control");
         require(property(screen, "AvailableSourceTypes") & 1, "portal does not provide monitor capture");
         const auto created = request(remote, "CreateSession", [&](const std::string& id) {
             const auto sid = token(); return g_variant_new("(@a{sv})", options({{"handle_token", g_variant_new_string(id.c_str())},
@@ -231,7 +232,7 @@ struct PortalSession::Impl : MimeClipboardTransport {
                 static_cast<Impl*>(data)->closed = true;
             }, this, nullptr));
         (void)request(remote, "SelectDevices", [&](const std::string& id) {
-            return g_variant_new("(o@a{sv})", session.c_str(), options({{"handle_token", g_variant_new_string(id.c_str())}, {"types", g_variant_new_uint32(3)}}));
+            return g_variant_new("(o@a{sv})", session.c_str(), options({{"handle_token", g_variant_new_string(id.c_str())}, {"types", g_variant_new_uint32(available_devices & 7U)}}));
         });
         const auto modes = property(screen, "AvailableCursorModes", true); selected.embedded_cursor = (modes & 2) != 0;
         (void)request(screen, "SelectSources", [&](const std::string& id) {
@@ -259,6 +260,7 @@ struct PortalSession::Impl : MimeClipboardTransport {
         });
         guint devices = 0; require(g_variant_lookup(started.get(), "devices", "u", &devices) && (devices & 3) == 3,
                                    "user did not grant required input devices");
+        touch_enabled = (devices & available_devices & 4U) != 0;
         gboolean clip_enabled = FALSE; g_variant_lookup(started.get(), "clipboard_enabled", "b", &clip_enabled);
         clipboard_enabled = clip_supported && clip_enabled;
         Variant streams(g_variant_lookup_value(started.get(), "streams", G_VARIANT_TYPE("a(ua{sv})")));
@@ -326,6 +328,24 @@ PortalSession::~PortalSession() = default;
 const PortalStream& PortalSession::stream() const { impl_->check(); return impl_->selected; }
 const std::string& PortalSession::path() const { return impl_->session; }
 bool PortalSession::clipboard_available() const { return impl_->clipboard_enabled; }
+bool PortalSession::touch_available() const { return impl_->touch_enabled; }
+void PortalSession::touch_batch(std::span<const TouchOperation> operations) {
+    impl_->check(); require(impl_->touch_enabled, "touchscreen permission was not granted");
+    require(operations.size() <= 1024 && operations.size() <= 2048 - impl_->async->pending,
+            "portal touch operation queue is full");
+    for (const auto& op : operations) {
+        require(op.slot < 32 && std::isfinite(op.x) && std::isfinite(op.y) && op.x >= 0 && op.y >= 0 &&
+                op.x <= 32768 && op.y <= 32768, "invalid portal touch operation");
+        require(op.action == TouchAction::down || op.action == TouchAction::motion || op.action == TouchAction::up,
+                "unknown portal touch action");
+    }
+    for (const auto& op : operations) {
+        if (op.action == TouchAction::up)
+            impl_->enqueue(remote, "NotifyTouchUp", g_variant_new("(o@a{sv}u)", impl_->session.c_str(), options(), op.slot));
+        else impl_->enqueue(remote, op.action == TouchAction::down ? "NotifyTouchDown" : "NotifyTouchMotion",
+            g_variant_new("(o@a{sv}uudd)", impl_->session.c_str(), options(), impl_->selected.node, op.slot, op.x, op.y));
+    }
+}
 UniqueFd PortalSession::open_pipewire() {
     return impl_->descriptor(screen, "OpenPipeWireRemote", g_variant_new("(o@a{sv})", impl_->session.c_str(), options()));
 }
