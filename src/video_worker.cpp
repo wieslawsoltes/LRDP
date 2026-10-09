@@ -1,7 +1,7 @@
 #include "lrdp/video.hpp"
 
 namespace lrdp {
-VideoWorker::VideoWorker(VideoFactory factory) : factory_(std::move(factory)) {
+VideoWorker::VideoWorker(VideoFactory factory, VideoCodec codec) : factory_(std::move(factory)), codec_(codec) {
     require(bool(factory_), "video worker requires an encoder factory");
     thread_ = std::thread([this] { run(); });
 }
@@ -32,12 +32,17 @@ void VideoWorker::run() {
           job = std::move(pending_); pending_.reset(); busy_ = true; }
         VideoCompletion result; result.generation = job->generation;
         try {
-            if (!encoder || width != job->frame.width || height != job->frame.height) {
-                encoder = factory_(job->frame.width, job->frame.height);
+            if (!encoder || job->key_frame || width != job->frame.width || height != job->frame.height) {
+                // A refresh may follow a discarded generation. Recreate the codec so
+                // its next primary starts a new reference sequence rather than an I
+                // picture that could retain references the client never received.
+                encoder = factory_(job->frame.width, job->frame.height, codec_);
                 require(encoder != nullptr, "encoder factory returned no encoder");
                 width = job->frame.width; height = job->frame.height; job->key_frame = true;
             }
             result.frame = encoder->encode(job->frame, job->key_frame);
+            require(result.frame->codec == codec_ && result.frame->width == width && result.frame->height == height,
+                    "encoder completion does not match its negotiated configuration");
         } catch (const std::exception& error) { result.error = error.what(); encoder.reset(); }
           catch (...) { result.error = "unknown video driver failure"; encoder.reset(); }
         { std::lock_guard lock(mutex_); busy_ = false; if (stopping_) return; completed_ = std::move(result); }

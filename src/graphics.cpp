@@ -1,4 +1,6 @@
 #include "lrdp/graphics.hpp"
+#include "lrdp/video.hpp"
+#include <set>
 #include <algorithm>
 #include <bit>
 #include <limits>
@@ -37,19 +39,43 @@ bool Graphics::receive(View message, bool video_available) {
         if (command == 0x12) {
             require(!negotiated_, "duplicate graphics capability advertisement");
             const auto count = in.le16(); require(count > 0 && count <= 64, "invalid graphics capability count");
-            std::optional<std::uint32_t> flags;
+            struct Choice {
+                unsigned score = 0;
+                std::uint32_t version = 0, flags = 0, length = 4;
+                bool video = false;
+                VideoCodec codec = VideoCodec::avc420;
+            } selected;
+            std::set<std::uint32_t> seen;
             for (unsigned i = 0; i < count; ++i) {
                 const auto version = in.le32(), length = in.le32();
-                require(length <= 4096, "oversized graphics capability"); Reader cap(in.take(length));
+                require(length <= 4096 && seen.insert(version).second, "oversized or duplicate graphics capability");
+                Reader cap(in.take(length)); Choice choice; choice.version = version;
                 if (version == 0x00080105) {
-                    require(!flags && length == 4, "invalid or duplicate graphics 8.1 capability"); flags = cap.le32();
+                    require(length == 4, "invalid graphics 8.1 capability");
+                    choice.video = video_available && (cap.le32() & 0x10);
+                    choice.flags = 2U | (choice.video ? 0x10U : 0U);
+                    choice.score = choice.video ? 10U : 1U;
+                } else if (version == 0x000a0002 || version == 0x000a0200) {
+                    require(length == 4, "invalid graphics 10/10.2 capability");
+                    choice.video = video_available && !(cap.le32() & 0x20);
+                    choice.codec = VideoCodec::avc444;
+                    choice.flags = 2U | (choice.video ? 0U : 0x20U);
+                    choice.score = choice.video ? 20U : 2U;
+                } else if (version == 0x000a0100) {
+                    // 10.1 has 16 reserved bytes, not the 4-byte 10.x flags field.
+                    // It mandates AVC444v2; do not select it without an encoder.
+                    require(length == 16, "invalid graphics 10.1 capability"); cap.skip(16);
+                    choice.length = 16; choice.video = video_available;
+                    choice.codec = VideoCodec::avc444v2; choice.score = choice.video ? 30U : 0U;
                 }
+                if (choice.score > selected.score) selected = choice;
             }
             in.end();
-            if (!flags) return false;
-            avc420_ = video_available && (*flags & 0x10);
-            Writer confirm; confirm.le32(0x00080105).le32(4).le32(2U | (avc420_ ? 0x10U : 0U));
-            emit(0x13, confirm.bytes()); negotiated_ = true;
+            if (!selected.score) return false;
+            Writer confirm; confirm.le32(selected.version).le32(selected.length);
+            if (selected.length == 16) confirm.zeros(16); else confirm.le32(selected.flags);
+            emit(0x13, confirm.bytes());
+            codec_ = selected.codec; video_enabled_ = selected.video; negotiated_ = true;
         } else if (command == 0x0d) {
             require(negotiated_, "graphics acknowledgement before capabilities");
             const auto depth = in.le32(), id = in.le32(); (void)in.le32(); in.end();
@@ -115,9 +141,31 @@ void Graphics::raw_frame(const Frame& frame) {
     end_frame(id);
 }
 void Graphics::video_frame(View annex_b, unsigned width, unsigned height, unsigned qp) {
-    require(avc420_ && width == width_ && height == height_, "AVC420 unavailable or stale video frame");
-    require(qp <= 51 && !annex_b.empty() && annex_b.size() <= 8 * 1024 * 1024, "invalid AVC420 frame or quantizer");
-    Writer bitmap; bitmap.le32(1).le16(0).le16(0).le16(width_).le16(height_).u8(qp).u8(75).raw(annex_b);
-    const auto id = begin_frame(); surface_bits(0x0b, 0, height_, bitmap.bytes()); end_frame(id);
+    video_bits(annex_b, {}, width, height, qp, VideoCodec::avc420);
+}
+void Graphics::video_frame(const EncodedVideo& frame) {
+    video_bits(frame.annex_b, frame.auxiliary, frame.width, frame.height, frame.qp, frame.codec);
+}
+void Graphics::video_bits(View primary, View auxiliary, unsigned width, unsigned height,
+                          unsigned qp, VideoCodec codec) {
+    require(video_enabled_ && codec == codec_ && width == width_ && height == height_,
+            "video completion does not match the negotiated surface/codec");
+    constexpr std::size_t limit = 8*1024*1024;
+    require(qp <= 51 && !primary.empty() && primary.size() <= limit && auxiliary.size() <= limit-primary.size(),
+            "invalid AVC frame or quantizer");
+    const bool full_chroma = codec != VideoCodec::avc420;
+    require(full_chroma ? !auxiliary.empty() : auxiliary.empty(), "invalid AVC picture pair");
+    Writer bitmap(limit + 64);
+    // LC=0 means both subframes; cbAvc420EncodedBitstream1 includes its 14-byte
+    // region/quantizer block. The auxiliary block has its own identical metadata.
+    if (full_chroma) bitmap.le32(std::uint32_t(primary.size()+14));
+    auto append = [&](View bytes) {
+        bitmap.le32(1).le16(0).le16(0).le16(width_).le16(height_).u8(qp).u8(75).raw(bytes);
+    };
+    append(primary); if (full_chroma) append(auxiliary);
+    const auto id = begin_frame();
+    surface_bits(codec == VideoCodec::avc420 ? 0x0b : codec == VideoCodec::avc444 ? 0x0e : 0x0f,
+                 0, height_, bitmap.bytes());
+    end_frame(id);
 }
 } // namespace lrdp

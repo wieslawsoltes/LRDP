@@ -16,7 +16,7 @@ struct ScaleDelete { void operator()(SwsContext* p) const { sws_freeContext(p); 
 int main() {
     try {
         VideoOptions options; options.backend = "software"; options.qp = 18;
-        auto encoder = ffmpeg_video_factory(options)(202,202);
+        auto encoder = ffmpeg_video_factory(options)(202,202,VideoCodec::avc420);
         const auto* h264 = avcodec_find_decoder(AV_CODEC_ID_H264); check(h264 != nullptr,"H.264 decoder missing");
         std::unique_ptr<AVCodecContext,CodecDelete> decoder(avcodec_alloc_context3(h264));
         check(decoder && avcodec_open2(decoder.get(),h264,nullptr) >= 0,"cannot open independent decoder");

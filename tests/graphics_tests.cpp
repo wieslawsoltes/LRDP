@@ -63,7 +63,7 @@ public:
 };
 void worker() {
     const auto owner = std::this_thread::get_id(); std::atomic<unsigned> creates = 0;
-    VideoWorker w([&](unsigned,unsigned) {
+    VideoWorker w([&](unsigned,unsigned,VideoCodec) {
         check(std::this_thread::get_id() != owner, "factory must execute off network thread"); ++creates;
         return std::make_unique<FakeEncoder>();
     });
@@ -80,7 +80,7 @@ void worker() {
     check(w.available(),"completion consumption frees slot");
     f.width = 64; f.bgra.resize(64*32*4); w.submit(f,8,false);
     auto second = await(); check(second.frame && second.generation == 8 && second.frame->key_frame && creates == 2,"resize rebuilds encoder");
-    VideoWorker fail([](unsigned,unsigned) -> std::unique_ptr<VideoEncoder> { throw ProtocolError("driver rejected device"); });
+    VideoWorker fail([](unsigned,unsigned,VideoCodec) -> std::unique_ptr<VideoEncoder> { throw ProtocolError("driver rejected device"); });
     fail.submit(f,9,false); const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
     for (;;) {
         if (auto result = fail.take()) { check(!result->frame && result->error == "driver rejected device", "driver failure crosses worker boundary"); break; }
