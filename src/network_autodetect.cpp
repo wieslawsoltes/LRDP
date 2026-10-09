@@ -71,13 +71,13 @@ void NetworkAutodetect::expire(Time now) {
         next_bandwidth_ = now + policy_.bandwidth_interval * (1U << std::min(bandwidth_failures_, 3U));
     }
 }
-std::vector<Bytes> NetworkAutodetect::poll(Time now, bool active, bool idle, bool data_pending) {
-    clock(now); expire(now); std::vector<Bytes> result;
+NetworkBatch NetworkAutodetect::poll(Time now, bool active, bool idle, bool data_pending) {
+    clock(now); expire(now); NetworkBatch result;
     if (!started_) return result;
     // A STOP is never gated on idleness, graphics activity or the ability to start
     // another probe. It follows existing normal packets and terminates one window.
     if (bandwidth_ && bandwidth_->phase == BandwidthPhase::collecting && now - bandwidth_->started >= policy_.bandwidth_window) {
-        result.push_back(packet(NetworkRequest::bandwidth_stop, bandwidth_->sequence));
+        result.after_data.push_back(packet(NetworkRequest::bandwidth_stop, bandwidth_->sequence));
         bandwidth_->phase = BandwidthPhase::stop_queued;
     }
     if (!active || !idle) return result;
@@ -86,11 +86,11 @@ std::vector<Bytes> NetworkAutodetect::poll(Time now, bool active, bool idle, boo
     if (sequence_ > 65535) { metrics_.sequence_exhausted = true; return result; }
     if (!metrics_.rtt_disabled && !rtt_ && now >= next_rtt_) {
         const auto id = std::uint16_t(sequence_);
-        result.push_back(packet(NetworkRequest::rtt, id)); rtt_ = Rtt{id, now, {}}; ++sequence_;
+        result.before_data.push_back(packet(NetworkRequest::rtt, id)); rtt_ = Rtt{id, now, {}}; ++sequence_;
     }
     if (sequence_ <= 65535 && !metrics_.bandwidth_disabled && !bandwidth_ && data_pending && now >= next_bandwidth_) {
         const auto id = std::uint16_t(sequence_);
-        result.push_back(packet(NetworkRequest::bandwidth_start, id));
+        result.before_data.push_back(packet(NetworkRequest::bandwidth_start, id));
         bandwidth_ = Bandwidth{id, BandwidthPhase::start_queued, now}; ++sequence_;
     }
     return result;

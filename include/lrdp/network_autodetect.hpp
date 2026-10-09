@@ -36,6 +36,13 @@ struct NetworkMetrics {
     bool sequence_exhausted = false, rtt_disabled = false, bandwidth_disabled = false;
 };
 
+// Markers bracket the current application batch. A STOP must be appended after
+// data already produced this turn; enqueueing it first would exclude slow renders.
+struct NetworkBatch {
+    std::vector<Bytes> before_data, after_data;
+    bool empty() const noexcept { return before_data.empty() && after_data.empty(); }
+};
+
 // One network-owner thread; two bounded outstanding operations. The clocks are
 // supplied by the transport, enabling exact deterministic timeout/race tests.
 class NetworkAutodetect final {
@@ -73,7 +80,7 @@ public:
     std::uint16_t channel() const noexcept { return channel_; }
     // Existing measurement stop/deadlines progress even during reactivation.
     // New probes require an empty transport queue and a fully active RDP session.
-    std::vector<Bytes> poll(Time now, bool active, bool transport_idle, bool application_data_pending);
+    NetworkBatch poll(Time now, bool active, bool transport_idle, bool application_data_pending);
     // Called once per FULLY transmitted plaintext RDP packet, including media.
     // The byte counter includes that packet, and must never reset during a connection.
     void transmitted(View whole_packet, std::uint64_t total_bytes, Time now);
