@@ -18,8 +18,10 @@ Bytes demand_active(std::uint16_t width, std::uint16_t height, std::uint16_t dep
     // MS-RDPBCGR 2.2.7.1.1: exactly 20 payload bytes. Both one-byte
     // refresh/suppress support fields immediately follow compressionLevel.
     Writer general; general.le16(4).le16(0).le16(0x200).le16(0)
-        .le16(0).le16(0).le16(0).le16(0).le16(0).u8(1).u8(1);
+        .le16(0).le16(1).le16(0).le16(0).le16(0).u8(1).u8(1);
     caps.add(1,general);
+    Writer fragments; fragments.le32(608299); caps.add(26, fragments);
+    Writer large; large.le16(3); caps.add(27, large);
     Writer bitmap; bitmap.le16(depth).le16(1).le16(1).le16(1).le16(width).le16(height).le16(0).le16(resize ? 1 : 0)
         .le16(1).u8(0).u8(0).le16(1).le16(0); caps.add(2,bitmap);
     Writer order; order.zeros(20).le16(1).le16(20).le16(0).le16(1).le16(0).le16(2).zeros(52);
