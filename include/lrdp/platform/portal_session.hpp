@@ -1,6 +1,7 @@
 #pragma once
 #include "lrdp/platform/unique_fd.hpp"
 #include "lrdp/clipboard/rich_content.hpp"
+#include "lrdp/input/touch_injector.hpp"
 #include <memory>
 #include <optional>
 
@@ -24,6 +25,8 @@ public:
     const PortalStream& stream() const;
     const std::string& path() const;
     bool clipboard_available() const;
+    bool touch_available() const;
+    void touch_batch(std::span<const TouchOperation> operations);
     UniqueFd open_pipewire();
     void poll();
     void flush();
