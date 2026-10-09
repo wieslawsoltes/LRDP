@@ -44,6 +44,11 @@ jobs:
           cmake -S . -B build-core -G Ninja -DLRDP_BUILD_SERVER=OFF -DCMAKE_BUILD_TYPE=Release
           cmake --build build-core --parallel 2
           ctest --test-dir build-core --output-on-failure
+      - name: Verify dependency-minimal preflight
+        run: |
+          cmake -S . -B build-minimal -G Ninja -DCMAKE_BUILD_TYPE=Release -DLRDP_X11=OFF -DLRDP_FFMPEG=OFF -DLRDP_GSSAPI=OFF -DLRDP_AUDIO=OFF -DLRDP_PORTAL=OFF -DLRDP_FUSE=OFF -DLRDP_PRINTING=OFF
+          cmake --build build-minimal --target lrdpd --parallel 2
+          ctest --test-dir build-minimal -R '^deployment_preflight$' --output-on-failure --output-junit minimal-preflight.xml
       - name: Collect build evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -55,3 +60,4 @@ jobs:
             build/test-results.xml
             build/Testing/Temporary/LastTest.log
             build-release/lrdpd
+            build-minimal/minimal-preflight.xml

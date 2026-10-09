@@ -19,12 +19,17 @@ For opt-in retained Xorg/application sessions, see [persistent headless reconnec
 | Input | Keyboard/mouse, RDPEI touch with portal injection, bounded pen wire decoding; native pen/IME parity remains incomplete |
 | Audio | Per-session PipeWire virtual speakers and microphone; PCM RDPSND and AUDIO_INPUT channels |
 | Client drives | Opt-in RDPDR redirection through owner-only FUSE mounts with bounded asynchronous I/O; readonly by default |
+| Printers | Opt-in owner-only raw printer submission through `lrdp-print`; no automatic document rendering |
 | Reconnection | Opt-in rootless broker retaining private Xorg/applications across worker loss; exact principal and ARC verifier required |
 
 Hardware encoding retains CPU capture, color conversion and upload. A real GNOME/Plasma session, physical GPU and Windows client have not been verified. [Lossless graphics](docs/LOSSLESS_GRAPHICS.md) uses `--encoder lossless` and does not require FFmpeg; it compares exact pixels, batches solid rectangles and applies ClearCodec residual RLE only when smaller than raw BGRA.
 
 Persistence retains a private Xorg desktop, not an existing physical or Wayland session; the broker does not survive its own restart.
 
+
+## Deployment checks
+
+Before starting a listener, run `lrdpd --capabilities` to inspect compiled integrations and append `--check-config` to your intended server command to validate local credentials and endpoint configuration. These commands do not open a desktop, connect to a broker, probe a GPU or create a listener. A valid result explicitly lists runtime checks that remain outstanding; it is not a hardware or authentication certification. See [deployment preflight](docs/DEPLOYMENT_PREFLIGHT.md).
 
 ## Build
 
@@ -86,4 +91,8 @@ The default policy allows 128 file/directory descriptors and 256 MiB, uses four 
 
 The native file-clipboard fixture uses real TLS, private Xorg and an independent Xlib application for byte-exact export/import, out-of-order chunks, clipboard paste, cursor hotspots, suppression, traversal rejection and cleanup. Further tests cover portal API/descriptor lifetimes, audio through private PipeWire devices, NLA, headless resizing, rich clipboard, RDPEI and redirected drives.
 
-Remaining work includes printer/serial/USB/smart-card/camera redirection, zero-copy capture/GPU conversion, additional codecs/caches and adaptive video regions, RemoteApp, UDP/gateway transports, PAM session brokerage, broker/host-restart recovery and complete native pen/IME support. Windows/mobile, physical-device, real-compositor, Kerberos-domain and WAN validation are not implied by project tests.
+Remaining work includes automatic printer queues/rendering, serial/USB/smart-card/camera redirection, zero-copy capture/GPU conversion, additional codecs/caches and adaptive video regions, RemoteApp, UDP/gateway transports, PAM session brokerage, broker/host-restart recovery and complete native pen/IME support. Windows/mobile, physical-device, real-compositor, Kerberos-domain and WAN validation are not implied by project tests.
+
+## Redirected printers
+
+Append `--printers-directory /absolute/private/0700/root` to an authenticated server command, then use `lrdp-print list SOCKET` and `lrdp-print submit SOCKET DEVICE:GENERATION printer-ready-file`. Submitted sources are immutable sealed snapshots; success requires a remote spool CLOSE acknowledgement, not physical page completion. See [PRINTING.md](docs/PRINTING.md) for exact source formats, limits, cancellation and failure semantics. Windows and physical-printer interoperability are not yet verified.

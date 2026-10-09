@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <unistd.h>
 namespace lrdp {
 namespace {
@@ -31,8 +32,19 @@ void raw_read(int fd, std::span<std::uint8_t> bytes, Clock::time_point deadline)
 }
 Socket::~Socket() { if (fd_ >= 0) ::close(fd_); }
 TlsContext::TlsContext(const std::string& certificate, const std::string& key) {
+    // Configuration paths are local trusted input; permit certificate-manager
+    // symlinks, but reject pipes/devices and bound parsing before OpenSSL reads.
+    for (const auto* path : {&certificate, &key}) {
+        struct stat info{};
+        require(path->find('\0') == std::string::npos && stat(path->c_str(), &info) == 0 &&
+                S_ISREG(info.st_mode) && info.st_size > 0 && info.st_size <= 4 * 1024 * 1024,
+                "TLS credentials must be nonempty regular files at most 4 MiB");
+    }
     std::unique_ptr<SSL_CTX, decltype(&SSL_CTX_free)> ctx(SSL_CTX_new(TLS_server_method()), SSL_CTX_free);
     require(ctx != nullptr, "cannot create TLS context");
+    // A service must fail rather than waiting for a terminal passphrase. Secure
+    // password-provider configuration is not implemented; encrypted keys fail.
+    SSL_CTX_set_default_passwd_cb(ctx.get(), [](char*, int, int, void*) { return 0; });
     require(SSL_CTX_set_min_proto_version(ctx.get(), TLS1_2_VERSION) == 1, "cannot require TLS 1.2");
     SSL_CTX_set_options(ctx.get(), SSL_OP_NO_COMPRESSION | SSL_OP_NO_RENEGOTIATION);
     SSL_CTX_set_session_cache_mode(ctx.get(), SSL_SESS_CACHE_OFF);
