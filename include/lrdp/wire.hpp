@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <source_location>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -29,7 +30,12 @@ public:
     [[nodiscard]] bool empty() const { return remaining() == 0; }
     View take(std::size_t length);
     void skip(std::size_t length) { (void)take(length); }
-    void end() const { require(empty(), "unexpected trailing wire data"); }
+    void end(std::source_location where = std::source_location::current()) const {
+        // Diagnose interoperability without logging filenames, credentials, or payloads.
+        // The function name is compiler-owned; lengths are the only peer-derived data.
+        if (!empty()) throw ProtocolError(std::string("unexpected trailing wire data in ") + where.function_name() +
+            ": " + std::to_string(remaining()) + " bytes after offset " + std::to_string(offset_));
+    }
     std::uint8_t u8();
     std::uint16_t le16();
     std::uint16_t be16();

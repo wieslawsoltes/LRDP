@@ -28,7 +28,7 @@ jobs:
       - name: Install native development dependencies
         run: |
           sudo apt-get update > /tmp/lrdp-apt.log 2>&1 || { tail -100 /tmp/lrdp-apt.log; exit 1; }
-          sudo apt-get install -y cmake ninja-build g++ pkg-config libssl-dev libpng-dev libkrb5-dev gss-ntlmssp libx11-dev libxtst-dev libxfixes-dev libxrandr-dev libxau-dev libglib2.0-dev libpipewire-0.3-dev libavcodec-dev libavutil-dev libswscale-dev xvfb ffmpeg python3 freerdp2-x11 dbus-daemon pipewire-bin xserver-xorg-core xserver-xorg-video-dummy xauth x11-xserver-utils xterm >> /tmp/lrdp-apt.log 2>&1 || { tail -100 /tmp/lrdp-apt.log; exit 1; }
+          sudo apt-get install -y cmake ninja-build g++ pkg-config libssl-dev libfuse3-dev fuse3 libpng-dev libkrb5-dev gss-ntlmssp libx11-dev libxtst-dev libxfixes-dev libxrandr-dev libxau-dev libglib2.0-dev libpipewire-0.3-dev libavcodec-dev libavutil-dev libswscale-dev xvfb ffmpeg python3 freerdp2-x11 dbus-daemon pipewire-bin xserver-xorg-core xserver-xorg-video-dummy xauth x11-xserver-utils xterm >> /tmp/lrdp-apt.log 2>&1 || { tail -100 /tmp/lrdp-apt.log; exit 1; }
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DLRDP_SANITIZE=ON -DLRDP_TEST_NTLM=ON
       - name: Build

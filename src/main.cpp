@@ -1,6 +1,9 @@
 #include "lrdp/session.hpp"
 #include "lrdp/transport.hpp"
 #include "lrdp/platform/clipboard_file_store.hpp"
+#ifdef LRDP_HAVE_FUSE
+#include "lrdp/platform/drive_mount.hpp"
+#endif
 #ifdef LRDP_HAVE_HEADLESS
 #include "lrdp/platform/headless_desktop.hpp"
 #endif
@@ -38,7 +41,8 @@ struct Configuration {
     bool laboratory = false, nla = false, allow_ntlm = false, once = false, graphics = true;
     VideoOptions video;
     AudioOptions audio;
-    std::string clipboard_root;
+    std::string clipboard_root, drive_root;
+    bool drives_writable = false;
     bool clipboard_rich = false;
     FileClipboardLimits clipboard_limits;
 #ifdef LRDP_HAVE_HEADLESS
@@ -50,6 +54,7 @@ void usage() {
               << "  --cert FILE --key FILE\n"
               << "  --auth nla --service TERMSRV@host.example.org --allow-principal user@REALM\n"
               << "  [--allow-ntlm] [--listen 127.0.0.1] [--port 3389] [--max-sessions 4]\n"
+              << "  [--drives-directory /private/0700/directory] [--drives-writable]\n"
               << "  [--backend demo|x11|portal|headless] [--display :0] [--fps 30] [--once]\n"
               << "  [--gfx auto|off] [--encoder auto|software|vaapi|nvenc|raw] [--device /dev/dri/renderD128]\n"
               << "  [--desktop-command /absolute/executable] [--desktop-arg ARG] [--xorg-executable /absolute/Xorg]\n"
@@ -81,6 +86,8 @@ Configuration parse(int argc, char** argv) {
         else if (option == "--service") c.service = value();
         else if (option == "--allow-principal") { const auto name = value(); require(!name.empty() && name.size() <= 1024, "invalid principal policy"); c.principals.insert(name); }
         else if (option == "--allow-ntlm") c.allow_ntlm = true;
+        else if (option == "--drives-directory") c.drive_root = value();
+        else if (option == "--drives-writable") c.drives_writable = true;
         else if (option == "--clipboard-rich") c.clipboard_rich = true;
         else if (option == "--clipboard-files") c.clipboard_root = value();
         else if (option == "--clipboard-max-mib") c.clipboard_limits.bytes = std::uint64_t(number(value(), 1024))*1024*1024;
@@ -117,6 +124,10 @@ Configuration parse(int argc, char** argv) {
 #endif
     require(!c.clipboard_rich || c.backend == "x11" || c.backend == "headless" || c.backend == "portal", "rich clipboard requires a native desktop backend");
     require(c.clipboard_root.empty() || c.backend == "x11" || c.backend == "headless" || c.backend == "portal", "file clipboard requires a native desktop backend");
+    require(!c.drives_writable || !c.drive_root.empty(), "--drives-writable requires --drives-directory");
+#ifndef LRDP_HAVE_FUSE
+    require(c.drive_root.empty(), "this build has no libfuse3 drive mounting support");
+#endif
     c.video.fps = c.fps; return c;
 }
 int bind_listener(const Configuration& c) {
@@ -161,6 +172,16 @@ int serve(int fd, TlsContext& context, const Configuration& c, const VideoFactor
         if (c.backend == "demo") desktop = make_demo_desktop();
         require(desktop != nullptr, "selected desktop backend unavailable");
         Session session(std::move(desktop), negotiation.protocols, protocol, video, c.graphics);
+#ifdef LRDP_HAVE_FUSE
+        std::unique_ptr<DriveMount> drive_mount;
+        if (!c.drive_root.empty()) {
+            drive::Limits limits; limits.writable = c.drives_writable;
+            auto bridge = std::make_shared<drive::Bridge>(limits);
+            session.configure_drives(bridge);
+            drive_mount = std::make_unique<DriveMount>(bridge, c.drive_root);
+            std::cout << "Drives mounted: " << drive_mount->path() << (c.drives_writable ? " (writable)" : " (readonly)") << '\n' << std::flush;
+        }
+#endif
         if (c.clipboard_rich) session.configure_rich_clipboard();
         if (!c.clipboard_root.empty()) session.configure_file_clipboard(make_clipboard_file_store(c.clipboard_root, c.clipboard_limits), c.clipboard_limits);
 #ifdef LRDP_HAVE_AUDIO

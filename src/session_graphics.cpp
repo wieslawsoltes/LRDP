@@ -5,6 +5,7 @@ void Session::flush_graphics() { for (const auto& packet : graphics_.drain()) se
 void Session::tick(bool transport_ready, bool capture_due) {
     desktop_->pump();
     synchronize_extended();
+    tick_drives(); // Device traffic remains independent of graphics suppression/reactivation.
     if (!active()) return;
     tick_audio(); // Audio continues while graphics are suppressed or backpressured.
     tick_clipboard();
