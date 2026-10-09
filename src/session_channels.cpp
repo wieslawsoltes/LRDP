@@ -12,6 +12,7 @@ void Session::static_channel(std::uint16_t channel, View payload) {
     }
     for (const auto& event : dynamic_.accept(*complete)) {
         receive_audio_dynamic(event);
+        receive_extended_dynamic(event);
         if (event.kind == DvcEventKind::ready) {
             if (desktop_->resizable() && client_resize_) send_channel(channel, dynamic_.create(1, "Microsoft::Windows::RDS::DisplayControl"));
             if (graphics_requested_) send_channel(channel, dynamic_.create(2, "Microsoft::Windows::RDS::Graphics"));

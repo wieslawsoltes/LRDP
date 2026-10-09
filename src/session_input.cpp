@@ -4,10 +4,13 @@ void Session::dispatch_input(const std::vector<InputEvent>& events) {
     // Never apply old-client coordinates to a desktop whose layout has changed.
     const bool coordinates_valid = active() && active_layout_.monitors == desktop_->layout().monitors;
     if (!coordinates_valid) {
-        for (const auto& event : events) if (event.kind == InputKind::synchronize) desktop_->release_input();
+        for (const auto& event : events) if (event.kind == InputKind::synchronize) release_all_input();
         return;
     }
-    for (const auto& event : events) desktop_->input(event);
+    for (const auto& event : events) {
+        if (event.kind == InputKind::synchronize) release_all_input();
+        desktop_->input(event);
+    }
 }
 void Session::input_slow(View payload) {
     Reader in(payload); const auto count = in.le16(); in.skip(2);

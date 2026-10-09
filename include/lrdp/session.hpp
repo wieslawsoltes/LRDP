@@ -21,6 +21,11 @@ class Session {
     std::set<std::uint16_t> joined_;
     Clipboard clipboard_;
     DynamicChannels dynamic_;
+    std::optional<ExtendedInput> extended_;
+    void receive_extended_dynamic(const DvcEvent& event);
+    void synchronize_extended();
+    void suspend_extended();
+    void release_all_input();
     std::map<std::uint16_t, ChannelAssembler> assemblers_;
     std::optional<std::uint16_t> clipboard_channel_, dynamic_channel_, sound_channel_;
     std::optional<DisplayController> display_;
