@@ -10,6 +10,16 @@ using namespace lrdp;
 // Deterministic scheduling point: let the native owner react to the header's
 // PropertyDelete before LRDP resumes from XGetWindowProperty. The real X server
 // still performs every property operation and all byte transfers.
+// Only the native import interval is observed. A UTF-16 conversion would
+// allocate a second large representation merely to validate already-UTF-8
+// HTML; keep that avoidable work out of the bounded clipboard deadline.
+static bool observe_large_utf16 = false;
+static unsigned large_utf16_conversions = 0;
+extern "C" Bytes __real__ZN4lrdp7utf16leESt17basic_string_viewIcSt11char_traitsIcEEb(std::string_view, bool);
+extern "C" Bytes __wrap__ZN4lrdp7utf16leESt17basic_string_viewIcSt11char_traitsIcEEb(std::string_view value, bool terminated) {
+    if (observe_large_utf16 && value.size() >= 65536) ++large_utf16_conversions;
+    return __real__ZN4lrdp7utf16leESt17basic_string_viewIcSt11char_traitsIcEEb(value, terminated);
+}
 static std::function<void()> after_increment_header;
 extern "C" int __real_XGetWindowProperty(Display*, Window, Atom, long, long, Bool, Atom,
     Atom*, int*, unsigned long*, unsigned long*, unsigned char**);
@@ -130,7 +140,10 @@ int main(){
             app.pump(); XSync(app.display,False); ++forced_interleavings;
         };
         app.publish({{app.utf8,bytes("native plain 🚀")},{app.html,bytes(html)},{app.bmp,encode_clipboard_bmp(image)}});
+        observe_large_utf16 = true;
         until([&]{ return remote.has_value(); });
+        observe_large_utf16 = false;
+        check(large_utf16_conversions == 0, "native UTF-8 rich import allocated an unnecessary UTF-16 shadow");
         check(forced_interleavings==1,"INCR scheduling regression was not exercised");
         check(remote->html==html && remote->text=="native plain 🚀" && remote->image==image,"native HTML/BMP multi-target import");
 #ifdef LRDP_TEST_PNG

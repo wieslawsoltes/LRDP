@@ -159,7 +159,8 @@ class X11Desktop final : public Desktop {
                 else {
                     std::string text(transfer.bytes.begin(),transfer.bytes.end());
                     if (!text.empty() && text.back() == 0) text.pop_back();
-                    (void)utf16le(text);
+                    // RichClipboard::validate below checks strict UTF-8 without
+                    // allocating a UTF-16 shadow within the transfer deadline.
                     if (transfer.target == html_) transfer.rich.html = std::move(text);
                     else transfer.rich.text = std::move(text);
                 }

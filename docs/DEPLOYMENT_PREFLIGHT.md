@@ -32,3 +32,9 @@ Primary API references: OpenSSL `SSL_CTX_set_default_passwd_cb` and `X509_cmp_ti
 
 https://docs.openssl.org/3.0/man3/SSL_CTX_set_default_passwd_cb/
 https://docs.openssl.org/3.0/man3/X509_cmp_time/
+
+## Native clipboard regression found during deployment CI
+
+The existing rich-clipboard integration fixture exposed excessive native validation work: after receiving UTF-8 HTML, the X11 adapter allocated and filled a UTF-16 copy solely to validate it, then immediately validated the UTF-8 snapshot again. The redundant conversion consumed most of the fixed five-second transfer deadline in sanitizer builds. The adapter now relies on the existing strict, allocation-free UTF-8 checks in `RichClipboard::validate`; it does not relax NUL/surrogate/size policy or extend deadlines.
+
+A Linux ELF/libstdc++ test-only symbol wrapper observes large UTF-16 conversions during native rich import. The regression fails against the original adapter and passes with the fix. Production linkage is unaffected. The existing independent TLS fixture also passed eight consecutive local sanitizer runs with its 1.2 MiB HTML transfer, image pixels, native paste, suppression and original timeout assertions intact. This is evidence for the identified redundant work, not a guarantee against all scheduler-induced timeouts.

@@ -23,7 +23,10 @@ endif()
 if(BUILD_TESTING AND TARGET lrdp_x11 AND XVFB_EXECUTABLE)
   add_executable(lrdp_rich_x11_tests tests/rich_x11_tests.cpp)
   target_link_libraries(lrdp_rich_x11_tests PRIVATE lrdp_x11)
-  target_link_options(lrdp_rich_x11_tests PRIVATE "-Wl,--wrap=XGetWindowProperty")
+  # Linux ELF / Itanium C++ ABI: observe the existing UTF-16 conversion entry
+  # point in tests only. Production linkage and native clipboard code are unchanged.
+  target_link_options(lrdp_rich_x11_tests PRIVATE "-Wl,--wrap=XGetWindowProperty"
+    "-Wl,--wrap=_ZN4lrdp7utf16leESt17basic_string_viewIcSt11char_traitsIcEEb")
   if(PNG_FOUND)
     target_compile_definitions(lrdp_rich_x11_tests PRIVATE LRDP_TEST_PNG=1)
   endif()
