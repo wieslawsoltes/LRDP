@@ -42,7 +42,7 @@ class VolumeClient(DriveClient):
             # RDP excludes FSCC's reserved byte; Boolean 0xFF must be accepted.
             payload=struct.pack('<QIIB',116444736000000001,0x89abcdef,len(label),255)+label
         elif kind==5:
-            name='NTFS'.encode('utf-16-le')
+            name=('NTFS\0\0' if self.mode=='writable' else 'NTFS').encode('utf-16-le')
             flags=7 | (0x80000 if self.mode=='readonly' else 0)
             payload=struct.pack('<III',flags,255,len(name))+name
             if self.mode=='malformed': payload=payload[:-1]

@@ -15,7 +15,7 @@ import tempfile
 import time
 
 
-def pixel_oracle() -> None:
+def pixel_oracle(tolerance: int = 10) -> None:
     """Read the independent client's actual X11 presentation, not LRDP's buffers."""
     x = C.CDLL(ctypes.util.find_library('X11'))
     x.XOpenDisplay.argtypes = [C.c_char_p]; x.XOpenDisplay.restype = C.c_void_p
@@ -35,7 +35,7 @@ def pixel_oracle() -> None:
         for px, py, expected in [(20, 20, (30, 60, 100)), (200, 200, (22, 53, 54))]:
             value = x.XGetPixel(image, px, py)
             rgb = ((value >> 16) & 255, (value >> 8) & 255, value & 255)
-            if any(abs(a - b) > 10 for a, b in zip(rgb, expected)):
+            if any(abs(a - b) > tolerance for a, b in zip(rgb, expected)):
                 raise RuntimeError(f'client presentation pixel {px},{py}: {rgb}, expected {expected}')
     finally:
         if image: x.XDestroyImage(image)
@@ -44,7 +44,7 @@ def pixel_oracle() -> None:
 
 def main() -> int:
     server_binary, client_binary = sys.argv[1:3]
-    mode = 'avc420' if '--gfx' in sys.argv[3:] else 'raw' if '--gfx-raw' in sys.argv[3:] else 'bitmap'
+    mode = 'lossless' if '--gfx-lossless' in sys.argv[3:] else 'avc420' if '--gfx' in sys.argv[3:] else 'raw' if '--gfx-raw' in sys.argv[3:] else 'bitmap'
     help_result = subprocess.run([client_binary, '/help'], capture_output=True, text=True, timeout=10)
     help_text = help_result.stdout + help_result.stderr
     graphics_args = []
@@ -53,7 +53,7 @@ def main() -> int:
             print('SKIP: installed independent client was built without AVC420; server codec tests remain required')
             return 77
         graphics_args = ['/gfx-h264:AVC420'] if '/gfx-h264' in help_text else ['/gfx:AVC420']
-    elif mode == 'raw': graphics_args = ['/gfx']
+    elif mode in ('raw', 'lossless'): graphics_args = ['/gfx']
     with tempfile.TemporaryDirectory(prefix='lrdp-interop-') as directory:
         root = pathlib.Path(directory)
         cert, key = root / 'cert.pem', root / 'key.pem'
@@ -63,7 +63,7 @@ def main() -> int:
             listener.bind(('127.0.0.1', 0)); port = listener.getsockname()[1]
         with (root / 'server.log').open('w+') as server_log, (root / 'client.log').open('w+') as client_log:
             server = subprocess.Popen([server_binary, '--lab-no-auth', '--cert', str(cert), '--key', str(key),
-                                       '--port', str(port), '--encoder', 'software' if mode == 'avc420' else 'raw', '--once'],
+                                       '--port', str(port), '--encoder', 'software' if mode == 'avc420' else 'lossless' if mode == 'lossless' else 'raw', '--once'],
                                       stdout=server_log, stderr=subprocess.STDOUT)
             client = None
             try:
@@ -77,7 +77,7 @@ def main() -> int:
                                            '/cert:ignore', '/sec:tls', '/size:640x480',
                                            '/bpp:24' if mode == 'bitmap' else '/bpp:32', '+clipboard', '/log-level:DEBUG'] + graphics_args,
                                           stdout=client_log, stderr=subprocess.STDOUT)
-                required = {'bitmap': 'Session active', 'raw': 'GFX uncompressed BGRA', 'avc420': 'libx264 (software encode)'}[mode]
+                required = {'bitmap': 'Session active', 'raw': 'GFX uncompressed BGRA', 'avc420': 'libx264 (software encode)', 'lossless': 'GFX lossless ClearCodec/solid/raw'}[mode]
                 deadline = time.monotonic() + 20
                 while True:
                     server_log.seek(0); text = server_log.read()
@@ -85,7 +85,7 @@ def main() -> int:
                         time.sleep(1)
                         if client.poll() is not None or server.poll() is not None:
                             raise RuntimeError('peer disconnected immediately after graphics negotiation')
-                        pixel_oracle()
+                        pixel_oracle(0 if mode == 'lossless' else 10)
                         client_log.seek(0)
                         errors = [line for line in client_log.read().splitlines() if '[ERROR]' in line and
                                   ('rdpgfx' in line or 'codec' in line or 'update' in line)]

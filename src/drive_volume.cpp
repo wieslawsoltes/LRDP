@@ -92,8 +92,17 @@ VolumeAttributes volume_attributes(View data) {
         throw ProtocolError("invalid filesystem component limit: " + std::to_string(result.max_component_utf16));
     require((result.flags & 0x8010U) != 0x8010U, "incompatible filesystem compression flags");
     require(length > 0 && length <= 4096 && !(length & 1U), "invalid filesystem name length");
-    result.filesystem = from_utf16le(in.take(length), false); in.end();
-    require(result.filesystem.find('\0') == std::string::npos, "filesystem name is not length-delimited Unicode");
+    auto name = in.take(length); in.end();
+    // FSCC 2.5.1 defines a length-delimited informational name. The installed
+    // independent RDP client includes a UTF-16 NUL suffix inside that length.
+    // Accept only trailing zero code units; consume the full declared field,
+    // preserve all other bytes, and reject empty names or hidden nonzero tails.
+    // This exception never applies to paths or authenticated identities.
+    while (name.size() >= 2 && name[name.size()-2] == 0 && name.back() == 0)
+        name = name.first(name.size()-2);
+    require(!name.empty(), "empty filesystem name after zero suffix");
+    result.filesystem = from_utf16le(name, false);
+    require(result.filesystem.find('\0') == std::string::npos, "embedded filesystem-name NUL");
     // Other flags remain opaque metadata. They do not enable unsupported local
     // semantics; in particular the name is never used to infer NTFS behaviour.
     return result;

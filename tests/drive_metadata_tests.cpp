@@ -99,7 +99,23 @@ void wire() {
     for (unsigned maximum : {0U, 256U, 0xffffffffU}) rejects([&] { (void)volume_attributes(attributes(7, "NTFS", maximum)); });
     rejects([&] { (void)volume_attributes(attributes(0x8010)); });
     rejects([&] { (void)volume_attributes(attributes(0, "")); });
-    rejects([&] { (void)volume_attributes(attributes(0, std::string("NTFS\0",5))); });
+    for (unsigned zeros = 0; zeros <= 8; ++zeros) {
+        const auto terminated = std::string("NTFS") + std::string(zeros, '\0');
+        check(volume_attributes(attributes(7, terminated, 260)).filesystem == "NTFS",
+              "informational filesystem name permits only a bounded zero suffix");
+        check(volume_attributes(attributes(7, terminated, 260)).max_component_utf16 == 255,
+              "client component hint cannot expand native path policy");
+    }
+    check(volume_attributes(attributes(7, "日本語 🚀 ")).filesystem == "日本語 🚀 ",
+          "filesystem Unicode and trailing spaces are preserved");
+    rejects([&] { (void)volume_attributes(attributes(0, std::string("NT\0FS",5))); });
+    rejects([&] { (void)volume_attributes(attributes(0, std::string("NTFS\0hidden\0",12))); });
+    rejects([&] { (void)volume_attributes(attributes(0, std::string(4, '\0'))); });
+    rejects([&] { (void)volume_attributes(attributes(0, std::string(2049, 'x'))); });
+    auto odd_name = attributes(); odd_name[8] = 7; odd_name.pop_back();
+    rejects([&] { (void)volume_attributes(odd_name); });
+    auto surrogate_name = attributes(); surrogate_name[12] = 0; surrogate_name[13] = 0xd8;
+    rejects([&] { (void)volume_attributes(surrogate_name); });
     for (unsigned kind : {2U, 7U}) {
         const auto value = volume_device(device(0x80000002, kind));
         check(value.read_only() && value.type == kind, "disk/CD and readonly device metadata");
