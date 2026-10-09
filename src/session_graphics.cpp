@@ -7,6 +7,9 @@ void Session::tick(bool transport_ready, bool capture_due) {
     synchronize_extended();
     tick_drives(); // Device traffic remains independent of graphics suppression/reactivation.
     if (!active()) return;
+    if (reconnect_peer_) if (auto* reconnect = desktop_->reconnection()) {
+        if (auto cookie = reconnect->refresh()) send_global(share_data(38, reconnect_logon_info(*cookie)));
+    }
     tick_audio(); // Audio continues while graphics are suppressed or backpressured.
     tick_clipboard();
     if (!transport_ready) return;

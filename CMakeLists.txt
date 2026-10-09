@@ -119,4 +119,6 @@ include(cmake/LrdpDrives.cmake)
 
 include(cmake/LrdpAvc444.cmake)
 
+include(cmake/LrdpReconnect.cmake)
+
 include(cmake/LrdpLossless.cmake)

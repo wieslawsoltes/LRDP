@@ -50,6 +50,7 @@ class Session {
     void apply_clipboard(ClipboardResult result);
     void tick_clipboard();
     bool channels_started_ = false, suppressed_ = false;
+    bool reconnect_peer_ = false, reconnect_activated_ = false;
     bool synchronized_ = false, control_granted_ = false, client_resize_ = false;
     std::unique_ptr<AudioDevices> audio_;
     AudioOutput sound_;

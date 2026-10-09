@@ -4,6 +4,8 @@ A specification-derived native C++20 Linux RDP server. The wire stack is origina
 
 **Experimental, not complete Windows RDP parity or a production security certification.** See [implementation status](docs/IMPLEMENTATION_STATUS.md), [security boundaries](docs/SECURITY.md) and [provenance](docs/CLEAN_ROOM.md).
 
+For opt-in retained Xorg/application sessions, see [persistent headless reconnection](docs/PERSISTENT_SESSIONS.md). The broker keeps applications alive across RDP-worker loss; it does not provide PAM impersonation or host-restart recovery.
+
 ## Implemented paths
 
 | Area | Available implementation |
@@ -15,10 +17,14 @@ A specification-derived native C++20 Linux RDP server. The wire stack is origina
 | Cursor | Native XFixes shape/hotspot capture, negotiated large pointers, alpha/legacy updates, exact LRU cache and hidden cursor |
 | Clipboard | Unicode text; opt-in HTML/images and confined file/directory copying on X11, headless and portal backends |
 | Input | Keyboard/mouse, RDPEI touch with portal injection, bounded pen wire decoding; native pen/IME parity remains incomplete |
-| Drives | Opt-in RDPDR remote files and private libfuse3 mounts, read-only by default; see [implementation status](docs/IMPLEMENTATION_STATUS.md) |
 | Audio | Per-session PipeWire virtual speakers and microphone; PCM RDPSND and AUDIO_INPUT channels |
+| Client drives | Opt-in RDPDR redirection through owner-only FUSE mounts with bounded asynchronous I/O; readonly by default |
+| Reconnection | Opt-in rootless broker retaining private Xorg/applications across worker loss; exact principal and ARC verifier required |
 
 Hardware encoding retains CPU capture, color conversion and upload. A real GNOME/Plasma session, physical GPU and Windows client have not been verified. [Lossless graphics](docs/LOSSLESS_GRAPHICS.md) uses `--encoder lossless` and does not require FFmpeg; it compares exact pixels, batches solid rectangles and applies ClearCodec residual RLE only when smaller than raw BGRA.
+
+Persistence retains a private Xorg desktop, not an existing physical or Wayland session; the broker does not survive its own restart.
+
 
 ## Build
 
@@ -80,4 +86,4 @@ The default policy allows 128 file/directory descriptors and 256 MiB, uses four 
 
 The native file-clipboard fixture uses real TLS, private Xorg and an independent Xlib application for byte-exact export/import, out-of-order chunks, clipboard paste, cursor hotspots, suppression, traversal rejection and cleanup. Further tests cover portal API/descriptor lifetimes, audio through private PipeWire devices, NLA, headless resizing, rich clipboard, RDPEI and redirected drives.
 
-Remaining work includes printer/serial/USB/smart-card/camera redirection, zero-copy capture/GPU conversion, additional codecs/caches and adaptive video regions, RemoteApp, UDP/gateway transports, persistent reconnect/PAM session brokerage and complete native pen/IME support. Windows/mobile, physical-device, real-compositor, Kerberos-domain and WAN validation are not implied by project tests.
+Remaining work includes printer/serial/USB/smart-card/camera redirection, zero-copy capture/GPU conversion, additional codecs/caches and adaptive video regions, RemoteApp, UDP/gateway transports, PAM session brokerage, broker/host-restart recovery and complete native pen/IME support. Windows/mobile, physical-device, real-compositor, Kerberos-domain and WAN validation are not implied by project tests.
