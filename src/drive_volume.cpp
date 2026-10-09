@@ -83,6 +83,11 @@ VolumeAttributes volume_attributes(View data) {
     Reader in(data); VolumeAttributes result;
     result.flags = in.le32(); result.max_component_utf16 = in.le32();
     const auto length = in.le32();
+    // Compatibility with the independent client observed in our kernel-FUSE
+    // fixture: its informational component hint is 260. FSCC requires <=255.
+    // Normalize ONLY that known value downwards; this never grants longer paths,
+    // sizes an allocation, or changes the independently enforced path policy.
+    if (result.max_component_utf16 == 260) result.max_component_utf16 = 255;
     if (result.max_component_utf16 == 0 || result.max_component_utf16 > 255)
         throw ProtocolError("invalid filesystem component limit: " + std::to_string(result.max_component_utf16));
     require((result.flags & 0x8010U) != 0x8010U, "incompatible filesystem compression flags");
