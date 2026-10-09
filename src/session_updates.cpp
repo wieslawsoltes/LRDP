@@ -26,7 +26,8 @@ void Session::share_packet(View payload) {
             Reader cap(capabilities.take(size - 4));
             if (kind == 1) {
                 require(size == 24, "invalid general capability length");
-                cap.skip(10); fastpath = (cap.le16() & 1) != 0;
+                cap.skip(10); const auto flags = cap.le16(); fastpath = (flags & 1) != 0;
+                reconnect_peer_ = (flags & 8) != 0;
             } else if (kind == 26) {
                 require(size == 8, "invalid multifragment capability length"); max_request = cap.le32();
             } else if (kind == 27) {
@@ -67,6 +68,12 @@ void Session::share_packet(View payload) {
         Writer font; font.le16(0).le16(0).le16(3).le16(4); send_global(share_data(40, font.bytes()));
         Writer pointer; pointer.le16(1).le16(0).le32(desktop_->embedded_cursor() ? 0 : 0x7f00); send_global(share_data(27, pointer.bytes()));
         phase_ = SessionPhase::active;
+        if (!reconnect_activated_) {
+            if (auto* reconnect = desktop_->reconnection()) {
+                if (auto cookie = reconnect->activated(reconnect_peer_)) send_global(share_data(38, reconnect_logon_info(*cookie)));
+            }
+            reconnect_activated_ = true;
+        }
         synchronize_extended();
         if (!channels_started_) {
             channels_started_ = true;

@@ -1,4 +1,5 @@
 #include "lrdp/drive/protocol.hpp"
+#include "lrdp/drive/volume.hpp"
 #include <algorithm>
 #include <limits>
 namespace lrdp::drive {
@@ -195,7 +196,7 @@ void Protocol::complete(Reader& in) {
             if(request.information==4)(void)basic_information(data);
             else if(request.information==5){FileInfo info;standard_information(info,data);}
             else require(length==8,"invalid attribute-tag information");
-        } else if(request.operation==Operation::query_volume)require(length==(request.information==3?24U:32U),"invalid volume-size information");
+        } else if(request.operation==Operation::query_volume)validate_volume_information(data,request.information);
         reply.transferred=length;reply.data.assign(data.begin(),data.end());
     }
     if(!pending.abandoned) {require(replies_.size()<limits_.outstanding,"drive results must be drained");replies_.push_back(std::move(reply));}

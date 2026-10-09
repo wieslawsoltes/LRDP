@@ -1,11 +1,15 @@
 #include "lrdp/session.hpp"
 #include "lrdp/transport.hpp"
+#ifdef LRDP_HAVE_PRINTING
+#include "lrdp/printing/native.hpp"
+#endif
 #include "lrdp/platform/clipboard_file_store.hpp"
 #ifdef LRDP_HAVE_FUSE
 #include "lrdp/platform/drive_mount.hpp"
 #endif
 #ifdef LRDP_HAVE_HEADLESS
 #include "lrdp/platform/headless_desktop.hpp"
+#include "lrdp/platform/persistent_desktop.hpp"
 #endif
 #ifdef LRDP_HAVE_GSSAPI
 #include "lrdp/security/nla_transport.hpp"
@@ -41,8 +45,8 @@ struct Configuration {
     bool laboratory = false, nla = false, allow_ntlm = false, once = false, graphics = true;
     VideoOptions video;
     AudioOptions audio;
-    std::string clipboard_root, drive_root;
-    bool drives_writable = false;
+    std::string clipboard_root, drive_root, broker_socket, printer_root;
+    bool drives_writable = false, network_metrics = false;
     bool clipboard_rich = false;
     FileClipboardLimits clipboard_limits;
 #ifdef LRDP_HAVE_HEADLESS
@@ -54,10 +58,13 @@ void usage() {
               << "  --cert FILE --key FILE\n"
               << "  --auth nla --service TERMSRV@host.example.org --allow-principal user@REALM\n"
               << "  [--allow-ntlm] [--listen 127.0.0.1] [--port 3389] [--max-sessions 4]\n"
+              << "  [--printers-directory /private/0700/directory]  Native raw printer submission.\n"
               << "  [--drives-directory /private/0700/directory] [--drives-writable]\n"
               << "  [--backend demo|x11|portal|headless] [--display :0] [--fps 30] [--once]\n"
-              << "  [--gfx auto|off] [--encoder auto|software|vaapi|nvenc|raw] [--device /dev/dri/renderD128]\n"
+              << "  [--gfx auto|off] [--encoder auto|software|vaapi|nvenc|raw|lossless] [--device /dev/dri/renderD128]\n"
               << "  [--desktop-command /absolute/executable] [--desktop-arg ARG] [--xorg-executable /absolute/Xorg]\n"
+              << "  [--network-metrics]  Opt-in continuous RTT and passive receive-throughput diagnostics.\n"
+              << "  [--session-broker /private/directory/broker.sock] (headless only; applications survive disconnect)\n"
               << "  [--audio] [--microphone]  Publish per-session virtual PipeWire devices.\n"
               << "  [--clipboard-rich] (HTML and images; x11/headless/portal)\n"
               << "  [--clipboard-files DIRECTORY] [--clipboard-max-mib 256] (x11/headless/portal; private staging)\n"
@@ -77,6 +84,7 @@ Configuration parse(int argc, char** argv) {
         else if (option == "--desktop-arg") c.headless.command.push_back(value());
         else if (option == "--xorg-executable") c.headless.xorg = value();
 #endif
+        else if (option == "--session-broker") c.broker_socket = value();
         else if (option == "--listen") c.listen = value(); else if (option == "--port") c.port = number(value(), 65535);
         else if (option == "--fps") c.fps = number(value(), 120);
         else if (option == "--max-sessions") c.max_sessions = number(value(), 64);
@@ -86,11 +94,13 @@ Configuration parse(int argc, char** argv) {
         else if (option == "--service") c.service = value();
         else if (option == "--allow-principal") { const auto name = value(); require(!name.empty() && name.size() <= 1024, "invalid principal policy"); c.principals.insert(name); }
         else if (option == "--allow-ntlm") c.allow_ntlm = true;
+        else if (option == "--printers-directory") c.printer_root = value();
         else if (option == "--drives-directory") c.drive_root = value();
         else if (option == "--drives-writable") c.drives_writable = true;
         else if (option == "--clipboard-rich") c.clipboard_rich = true;
         else if (option == "--clipboard-files") c.clipboard_root = value();
         else if (option == "--clipboard-max-mib") c.clipboard_limits.bytes = std::uint64_t(number(value(), 1024))*1024*1024;
+        else if (option == "--network-metrics") c.network_metrics = true;
         else if (option == "--audio") c.audio.playback = true;
         else if (option == "--microphone") c.audio.microphone = true;
         else if (option == "--lab-no-auth") c.laboratory = true; else if (option == "--once") c.once = true;
@@ -118,16 +128,21 @@ Configuration parse(int argc, char** argv) {
     require(!c.audio.playback && !c.audio.microphone, "this build has no PipeWire audio support");
 #endif
     require(c.video.backend == "auto" || c.video.backend == "software" || c.video.backend == "vaapi" ||
-            c.video.backend == "nvenc" || c.video.backend == "raw", "invalid video encoder");
+            c.video.backend == "nvenc" || c.video.backend == "raw" || c.video.backend == "lossless", "invalid video encoder");
 #ifndef LRDP_HAVE_FFMPEG
-    require(c.video.backend == "auto" || c.video.backend == "raw", "this build has no FFmpeg support");
+    require(c.video.backend == "auto" || c.video.backend == "raw" || c.video.backend == "lossless", "this build has no FFmpeg support");
 #endif
     require(!c.clipboard_rich || c.backend == "x11" || c.backend == "headless" || c.backend == "portal", "rich clipboard requires a native desktop backend");
     require(c.clipboard_root.empty() || c.backend == "x11" || c.backend == "headless" || c.backend == "portal", "file clipboard requires a native desktop backend");
+    require(c.broker_socket.empty() || c.backend == "headless", "persistent sessions require --backend headless");
     require(!c.drives_writable || !c.drive_root.empty(), "--drives-writable requires --drives-directory");
 #ifndef LRDP_HAVE_FUSE
     require(c.drive_root.empty(), "this build has no libfuse3 drive mounting support");
 #endif
+#ifndef LRDP_HAVE_PRINTING
+    require(c.printer_root.empty(), "this build has no native printer submission support");
+#endif
+    require(c.video.backend != "lossless" || c.graphics, "lossless graphics requires --gfx auto");
     c.video.fps = c.fps; return c;
 }
 int bind_listener(const Configuration& c) {
@@ -152,9 +167,10 @@ int serve(int fd, TlsContext& context, const Configuration& c, const VideoFactor
             write_raw(fd, negotiation_reply(c.nla ? 5 : 1, true)); throw ProtocolError("required RDP security protocol was not offered");
         }
         write_raw(fd, negotiation_reply(protocol)); TlsStream stream(fd, context);
+        std::string principal = "lrdp:loopback-laboratory";
 #ifdef LRDP_HAVE_GSSAPI
         if (c.nla) {
-            const auto principal = authenticate_nla(stream.native_tls(), fd, {c.service, c.allow_ntlm},
+            principal = authenticate_nla(stream.native_tls(), fd, {c.service, c.allow_ntlm},
                 [&](const std::string& identity) { return c.principals.contains(identity); });
             std::cout << "NLA principal authorized: " << principal << '\n' << std::flush;
         }
@@ -167,11 +183,13 @@ int serve(int fd, TlsContext& context, const Configuration& c, const VideoFactor
         if (c.backend == "portal") desktop = make_portal_desktop();
 #endif
 #ifdef LRDP_HAVE_HEADLESS
-        if (c.backend == "headless") desktop = make_headless_desktop(c.headless);
+        if (c.backend == "headless") desktop = c.broker_socket.empty() ? make_headless_desktop(c.headless)
+            : make_persistent_desktop(c.broker_socket, c.laboratory ? principal : "nla:" + principal);
 #endif
         if (c.backend == "demo") desktop = make_demo_desktop();
         require(desktop != nullptr, "selected desktop backend unavailable");
         Session session(std::move(desktop), negotiation.protocols, protocol, video, c.graphics);
+        if (c.video.backend == "lossless") session.configure_lossless_graphics();
 #ifdef LRDP_HAVE_FUSE
         std::unique_ptr<DriveMount> drive_mount;
         if (!c.drive_root.empty()) {
@@ -182,6 +200,19 @@ int serve(int fd, TlsContext& context, const Configuration& c, const VideoFactor
             std::cout << "Drives mounted: " << drive_mount->path() << (c.drives_writable ? " (writable)" : " (readonly)") << '\n' << std::flush;
         }
 #endif
+#ifdef LRDP_HAVE_PRINTING
+        if (!c.printer_root.empty()) {
+            auto endpoint = std::make_unique<printing::NativeEndpoint>(c.printer_root);
+            std::cout << "Printers endpoint: " << endpoint->path() << '\n' << std::flush;
+            session.configure_printers(std::move(endpoint));
+        }
+#endif
+        if (c.network_metrics) {
+            session.configure_network_metrics();
+            stream.observe_transmissions([&session](View packet, std::uint64_t bytes, Clock::time_point now) {
+                session.network_transmitted(packet, bytes, now);
+            });
+        }
         if (c.clipboard_rich) session.configure_rich_clipboard();
         if (!c.clipboard_root.empty()) session.configure_file_clipboard(make_clipboard_file_store(c.clipboard_root, c.clipboard_limits), c.clipboard_limits);
 #ifdef LRDP_HAVE_AUDIO
@@ -193,12 +224,23 @@ int serve(int fd, TlsContext& context, const Configuration& c, const VideoFactor
 #endif
         const auto start = Clock::now(); auto next_frame = start, last_receive = start, last_progress = start;
         std::uint64_t previous_written = 0; bool announced = false; std::string graphics_status, clipboard_status;
-        auto drain = [&] { stream.enqueue(session.drain()); stream.enqueue_media(session.drain_media()); };
+        auto next_network_log = start;
+        auto drain = [&] {
+            auto packets = session.drain(); auto media = session.drain_media();
+            const bool data_pending = !packets.empty() || !media.empty();
+            auto probes = session.poll_network(Clock::now(), stream.queued() == 0, data_pending);
+            stream.enqueue(std::move(probes.before_data));
+            stream.enqueue(std::move(packets)); stream.enqueue_media(std::move(media));
+            stream.enqueue(std::move(probes.after_data));
+        };
         while (running && session.phase() != SessionPhase::closed) {
             stream.pump(10);
             while (auto packet = stream.packet()) {
                 struct Wipe { Bytes& bytes; ~Wipe() { OPENSSL_cleanse(bytes.data(), bytes.size()); } } wipe{*packet};
-                session.receive(*packet); last_receive = Clock::now(); drain();
+                session.receive(*packet);
+                // Diagnostic replies must not silently defeat the existing idle policy.
+                if (!session.last_packet_was_network()) last_receive = Clock::now();
+                drain();
             }
             const auto now = Clock::now();
             if (!announced && session.active()) { std::cout << "Session active\n" << std::flush; announced = true; }
@@ -209,6 +251,22 @@ int serve(int fd, TlsContext& context, const Configuration& c, const VideoFactor
             const bool due = now >= next_frame;
             session.tick(stream.normal_queued() == 0, due); drain();
             if (due) next_frame = now + std::chrono::microseconds(1000000 / c.fps);
+            if (const auto* detector = session.network_metrics(); detector && now >= next_network_log) {
+                const auto& m = detector->metrics();
+                auto number_or_unknown = [](const auto& value) { return value ? std::to_string(*value) : std::string("unknown"); };
+                std::cout << "Network: rtt_us=" << number_or_unknown(m.rtt_us)
+                          << " smoothed_rtt_us=" << number_or_unknown(m.smoothed_rtt_us)
+                          << " minimum_rtt_us=" << number_or_unknown(m.minimum_rtt_us)
+                          << " jitter_us=" << number_or_unknown(m.jitter_us)
+                          << " rtt_age_ms=" << number_or_unknown(detector->rtt_age_ms(now))
+                          << " peer_receive_kbps=" << number_or_unknown(m.peer_kbps)
+                          << " bandwidth_age_ms=" << number_or_unknown(detector->bandwidth_age_ms(now))
+                          << " rtt_samples=" << m.rtt_samples << " bandwidth_samples=" << m.bandwidth_samples
+                          << " ignored=" << m.ignored_responses << " invalid=" << m.invalid_measurements << " timeouts=" << m.timeouts
+                          << " rtt_disabled=" << m.rtt_disabled << " bandwidth_disabled=" << m.bandwidth_disabled
+                          << " sequence_exhausted=" << m.sequence_exhausted << '\n' << std::flush;
+                next_network_log = now + std::chrono::seconds(5);
+            }
             if (clipboard_status != session.clipboard_status()) {
                 clipboard_status = session.clipboard_status(); std::cout << "Clipboard: " << clipboard_status << '\n' << std::flush;
             }
@@ -227,7 +285,7 @@ int main(int argc, char** argv) {
         std::signal(SIGPIPE, SIG_IGN); std::signal(SIGTERM, stop); std::signal(SIGINT, stop);
         TlsContext context(c.certificate, c.key); Socket listener(bind_listener(c)); VideoFactory video;
 #ifdef LRDP_HAVE_FFMPEG
-        if (c.video.backend != "raw") video = ffmpeg_video_factory(c.video);
+        if (c.video.backend != "raw" && c.video.backend != "lossless") video = ffmpeg_video_factory(c.video);
 #endif
         std::cout << "LRDP listening on " << c.listen << ':' << c.port << " (" << (c.nla ? "NLA" : "TLS laboratory profile")
                   << ", backend=" << c.backend << ")\n" << std::flush;

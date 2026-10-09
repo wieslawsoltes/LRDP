@@ -4,20 +4,11 @@
 #include <cerrno>
 
 namespace lrdp {
-namespace {
-void validate_client_info(View payload) {
-    Reader in(payload); require(in.le16() == 0x40 && in.le16() == 0, "expected protected Client Info");
-    in.skip(4); const auto flags = in.le32(); require(flags & 0x10, "Unicode Client Info required");
-    unsigned lengths[5];
-    for (auto& n : lengths) { n = in.le16(); require(n <= 4096 && !(n & 1), "Client Info string exceeds policy"); }
-    for (const auto n : lengths) { Reader value(in.take(n + 2)); value.skip(n); require(value.le16() == 0, "unterminated Client Info string"); }
-    require(in.remaining() <= 8192, "extended Client Info exceeds policy");
-}
-}
 Session::Session(std::unique_ptr<Desktop> desktop, std::uint32_t requested, std::uint32_t selected, VideoFactory video, bool graphics)
     : desktop_(std::move(desktop)), requested_protocols_(requested), selected_protocol_(selected),
       video_factory_(std::move(video)), graphics_enabled_(graphics) { require(desktop_ != nullptr, "session requires a desktop"); }
 Session::~Session() {
+    if (printers_) printers_->disconnect();
     if (drive_bridge_) drive_bridge_->disconnect(ENOTCONN);
     try { release_all_input(); } catch (...) {}
 }
@@ -34,7 +25,7 @@ void Session::activate() {
     invalidate_graphics(); graphics_reset_ = true; active_layout_ = desktop_->layout();
     require(active_layout_.width <= 65535 && active_layout_.height <= 65535, "desktop exceeds basic RDP bounds");
     send_global(demand_active(std::uint16_t(active_layout_.width), std::uint16_t(active_layout_.height), settings_.depth,
-                              desktop_->resizable(), desktop_->unicode_input()));
+                              desktop_->resizable(), desktop_->unicode_input(), desktop_->reconnection()!=nullptr));
     if (settings_.early_caps & 0x40) send_global(monitor_layout_pdu(active_layout_));
     synchronized_ = control_granted_ = false; phase_ = SessionPhase::confirm;
 }
@@ -42,11 +33,13 @@ void Session::reactivate() {
     suspend_extended(); release_all_input(); Writer body; body.le32(share_id).le16(0); send_global(share_control(6, body.bytes())); activate();
 }
 void Session::receive(View packet) {
+    last_packet_network_ = false;
     require(phase_ != SessionPhase::closed && !packet.empty(), "session closed or packet empty");
     if (packet[0] != 3) { require(active() || phase_ == SessionPhase::finalize, "fast-path input before Confirm Active"); input_fast(packet); return; }
     const auto payload = parse_x224_data(packet);
     if (phase_ == SessionPhase::connect) {
         settings_ = connect_initial(payload, selected_protocol_);
+        negotiate_network();
         graphics_requested_ = graphics_enabled_ && (settings_.early_caps & 0x100);
         if (desktop_->resizable()) {
             Monitor monitor; monitor.width = (settings_.width + 1U) & ~1U; monitor.height = settings_.height;
@@ -72,12 +65,12 @@ void Session::receive(View packet) {
     if (command == 0x38) {
         require(phase_ == SessionPhase::join, "MCS ChannelJoin out of sequence");
         require(in.be16() == client_user - 1001, "wrong MCS initiator"); const auto channel = in.be16(); in.end();
-        require(channel == client_user || channel == global_channel ||
+        require(channel == client_user || channel == global_channel || (settings_.message_channel && channel == settings_.message_channel) ||
             std::find(settings_.channel_ids.begin(), settings_.channel_ids.end(), channel) != settings_.channel_ids.end(), "unauthorized channel join");
         require(joined_.insert(channel).second, "duplicate MCS ChannelJoin");
         Writer response; response.u8(0x3e).u8(0).be16(client_user - 1001).be16(channel).be16(channel);
         outbound_.push_back(x224_data(response.bytes()));
-        if (joined_.size() == settings_.channel_ids.size() + 2) phase_ = SessionPhase::info;
+        if (joined_.size() == settings_.channel_ids.size() + 2 + (settings_.message_channel ? 1U : 0U)) phase_ = SessionPhase::info;
         return;
     }
     if ((command & 0xfc) == 0x20) { release_all_input(); phase_ = SessionPhase::closed; return; }
@@ -86,9 +79,14 @@ void Session::receive(View packet) {
     const auto channel = in.be16(); require(joined_.contains(channel), "data on unjoined channel");
     require(in.u8() == 0x70, "segmented MCS data was not negotiated");
     const auto data = in.take(in.per_length()); in.end();
+    if (receive_network(channel, data)) return;
     if (phase_ == SessionPhase::info) {
         require(channel == global_channel, "Client Info must use global channel");
-        validate_client_info(data); send_global(valid_client_license()); activate(); return;
+        const auto cookie = client_info_reconnect(data);
+        if (auto* reconnect = desktop_->reconnection()) reconnect->prepare(cookie);
+        else require(!cookie, "reconnection is not enabled on this backend");
+        display_.emplace(desktop_->layout());
+        send_global(valid_client_license()); activate(); return;
     }
     if (channel == global_channel) {
         Reader shares(data);

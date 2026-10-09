@@ -3,6 +3,7 @@
 #include "transport_queue.hpp"
 #include <array>
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <openssl/ssl.h>
@@ -36,6 +37,7 @@ class TlsStream {
     short write_wait_ = 0, read_wait_ = 0;
     std::size_t retry_size_ = 0;
     std::uint64_t written_ = 0;
+    std::function<void(View, std::uint64_t, std::chrono::steady_clock::time_point)> packet_sent_;
     std::optional<std::chrono::steady_clock::time_point> partial_since_;
 public:
     TlsStream(int fd, TlsContext& context);
@@ -45,6 +47,11 @@ public:
     SSL* native_tls() const noexcept { return ssl_; }
     void enqueue(std::vector<Bytes> packets) { output_.enqueue(std::move(packets)); }
     void enqueue_media(std::vector<Bytes> packets) { output_.enqueue(std::move(packets), true); }
+    // Observer runs synchronously once per complete SSL_write packet, with a
+    // borrowed whole-packet view. It must not reenter or retain transport buffers.
+    void observe_transmissions(std::function<void(View, std::uint64_t, std::chrono::steady_clock::time_point)> observer) {
+        packet_sent_ = std::move(observer);
+    }
     void pump(int timeout_ms);
     std::optional<Bytes> packet();
     std::size_t queued() const { return output_.queued(); }

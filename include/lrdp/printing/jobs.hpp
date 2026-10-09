@@ -34,6 +34,8 @@ public:
     // Rejects before any remote operation; explicit device generation is mandatory.
     void submit(std::uint64_t cookie, drive::DeviceKey device, std::shared_ptr<const Source> source);
     void cancel(std::uint64_t cookie);
+    // Connection loss cannot complete outstanding remote jobs; drop local snapshots.
+    void discard() noexcept;
     std::vector<drive::Request> take_requests(std::uint32_t chunk=65536);
     void complete(const drive::Reply& reply);
     std::vector<Result> take_results();

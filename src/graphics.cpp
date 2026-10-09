@@ -123,6 +123,7 @@ void Graphics::reset(const Layout& layout) {
     Writer surface; surface.le16(0).le16(width_).le16(height_).u8(0x20); emit(9, surface.bytes());
     Writer mapping; mapping.le16(0).le16(0).le32(0).le32(0); emit(0x0f, mapping.bytes());
     surface_ = true;
+    lossless_.invalidate();
 }
 bool Graphics::can_send() const {
     if (!ready()) return false;

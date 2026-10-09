@@ -33,6 +33,9 @@ public:
         }
         return View(active_->bytes).subspan(active_->offset);
     }
+    // Borrowed until consume() completes the active packet. Does not select a
+    // queued packet or disturb priority/retry state.
+    View active_packet() const noexcept { return active_ ? View(active_->bytes) : View{}; }
     void consume(std::size_t count) {
         require(active_ && count > 0 && count <= active_->bytes.size() - active_->offset, "invalid transport write completion");
         auto& queued = active_->media ? media_bytes_ : normal_bytes_; queued -= count; active_->offset += count;

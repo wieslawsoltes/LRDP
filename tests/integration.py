@@ -221,7 +221,7 @@ class Client:
         self.confirm()
 
 
-def run(binary: pathlib.Path, output: pathlib.Path | None = None, client_class=Client) -> None:
+def run(binary: pathlib.Path, output: pathlib.Path | None = None, client_class=Client, server_args=()) -> None:
     with tempfile.TemporaryDirectory(prefix='lrdp-test-') as directory:
         root = pathlib.Path(directory)
         cert, key = root / 'cert.pem', root / 'key.pem'
@@ -230,7 +230,7 @@ def run(binary: pathlib.Path, output: pathlib.Path | None = None, client_class=C
                         '-keyout', str(key), '-out', str(cert)], check=True, capture_output=True)
         with socket.socket() as listener:
             listener.bind(('127.0.0.1', 0)); port = listener.getsockname()[1]
-        server = subprocess.Popen([str(binary), '--lab-no-auth', '--cert', str(cert), '--key', str(key), '--port', str(port), '--once'],
+        server = subprocess.Popen([str(binary), '--lab-no-auth', '--cert', str(cert), '--key', str(key), '--port', str(port), '--once', *server_args],
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
             assert server.stdout is not None

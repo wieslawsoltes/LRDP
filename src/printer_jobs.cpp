@@ -15,6 +15,9 @@ void Jobs::submit(std::uint64_t cookie, drive::DeviceKey device, std::shared_ptr
     job.deadline=drive::Clock::now()+std::chrono::minutes(5);
     const auto bytes=job.source->size(); jobs_.emplace(cookie,std::move(job)); held_bytes_+=bytes;
 }
+void Jobs::discard() noexcept {
+    jobs_.clear(); devices_.clear(); results_.clear(); held_bytes_=0;
+}
 void Jobs::cancel(std::uint64_t cookie) {
     const auto found=jobs_.find(cookie); if(found!=jobs_.end()) found->second.status=0xc0000120;
 }

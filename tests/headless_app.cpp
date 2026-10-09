@@ -13,7 +13,7 @@ int main(int argc,char** argv) {
     const auto clipboard = XInternAtom(d,"CLIPBOARD",False), utf8 = XInternAtom(d,"UTF8_STRING",False);
     const auto targets = XInternAtom(d,"TARGETS",False);
     XSelectInput(d,root,StructureNotifyMask);
-    XSelectInput(d,window,ButtonPressMask|ButtonReleaseMask|KeyPressMask|ExposureMask);
+    XSelectInput(d,window,ButtonPressMask|ButtonReleaseMask|KeyPressMask|KeyReleaseMask|ExposureMask);
     XMapWindow(d,window); XSetInputFocus(d,window,RevertToParent,CurrentTime);
     XSetSelectionOwner(d,clipboard,window,CurrentTime); XFlush(d);
     log << "START " << getpid() << ' ' << window << '\n' << std::flush;
@@ -24,7 +24,9 @@ int main(int argc,char** argv) {
             log << "SIZE " << event.xconfigure.width << ' ' << event.xconfigure.height << '\n' << std::flush;
         } else if (event.type == ButtonPress) {
             ++clicks; XSetWindowBackground(d,window,clicks & 1 ? 0x55aa33 : 0x336699); XClearWindow(d,window); XFlush(d);
-            log << "CLICK " << clicks << '\n' << std::flush;
+            log << "CLICK " << clicks << '\n' << "MODIFIERS " << event.xbutton.state << '\n' << std::flush;
+        } else if (event.type == KeyPress || event.type == KeyRelease) {
+            log << (event.type == KeyPress ? "KEY_DOWN " : "KEY_UP ") << event.xkey.keycode << '\n' << std::flush;
         } else if (event.type == SelectionRequest) {
             const auto& r = event.xselectionrequest; XEvent response{};
             response.xselection.type = SelectionNotify; response.xselection.display = d;

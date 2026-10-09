@@ -66,7 +66,8 @@ Bytes request_body(const Request& r, std::uint32_t limit) {
         require(r.information == 4 || r.information == 5 || r.information == 35, "unsupported file information class");
         out.le32(r.information).le32(0).zeros(24); break;
     case Operation::query_volume:
-        require(r.information == 3 || r.information == 7, "unsupported volume information class");
+        require(r.information == 1 || r.information == 3 || r.information == 4 ||
+                r.information == 5 || r.information == 7, "unsupported volume information class");
         out.le32(r.information).le32(0).zeros(24); break;
     case Operation::query_directory: {
         require(r.information == 1, "unsupported directory information class");

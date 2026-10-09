@@ -1,12 +1,15 @@
 #include "lrdp/session.hpp"
 namespace lrdp {
-void Session::invalidate_graphics() { ++graphics_generation_; previous_graphics_ = {}; bitmap_.invalidate(); }
+void Session::invalidate_graphics() { ++graphics_generation_; previous_graphics_ = {}; bitmap_.invalidate(); graphics_.invalidate_lossless(); }
 void Session::flush_graphics() { for (const auto& packet : graphics_.drain()) send_dynamic(2, packet); }
 void Session::tick(bool transport_ready, bool capture_due) {
     desktop_->pump();
     synchronize_extended();
     tick_drives(); // Device traffic remains independent of graphics suppression/reactivation.
     if (!active()) return;
+    if (reconnect_peer_) if (auto* reconnect = desktop_->reconnection()) {
+        if (auto cookie = reconnect->refresh()) send_global(share_data(38, reconnect_logon_info(*cookie)));
+    }
     tick_audio(); // Audio continues while graphics are suppressed or backpressured.
     tick_clipboard();
     if (!transport_ready) return;
@@ -20,6 +23,10 @@ void Session::tick(bool transport_ready, bool capture_due) {
     if (graphics_requested_ && graphics_.ready()) {
         if (graphics_reset_) { graphics_.reset(active_layout_); graphics_reset_ = false; flush_graphics(); }
         if (!graphics_.can_send()) return;
+        if (lossless_graphics_) {
+            if (capture_due) { graphics_.lossless_frame(desktop_->capture()); flush_graphics(); }
+            return;
+        }
         if (video_) {
             if (auto result = video_->take()) {
                 if (!result->error.empty()) {

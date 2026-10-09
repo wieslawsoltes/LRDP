@@ -9,6 +9,8 @@ struct ClientSettings {
     std::uint16_t width = 1280, height = 720, depth = 24;
     std::uint32_t keyboard_layout = 0;
     std::uint16_t early_caps = 0;
+    bool message_channel_requested = false;
+    std::uint16_t message_channel = 0; // Separate from the static channel ID array.
     std::optional<Layout> monitors;
     std::map<std::string, std::uint16_t> channels;
     std::vector<std::uint16_t> channel_ids;
@@ -19,5 +21,5 @@ Bytes mcs_data(std::uint16_t channel, View payload);
 Bytes share_control(std::uint16_t type, View payload, std::uint16_t source = server_user);
 Bytes share_data(std::uint8_t type, View payload, std::uint16_t source = server_user);
 Bytes valid_client_license();
-Bytes demand_active(std::uint16_t width, std::uint16_t height, std::uint16_t depth, bool resize, bool unicode_input = true);
+Bytes demand_active(std::uint16_t width, std::uint16_t height, std::uint16_t depth, bool resize, bool unicode_input = true, bool reconnect = false);
 } // namespace lrdp

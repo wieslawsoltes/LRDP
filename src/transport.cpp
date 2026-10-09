@@ -1,5 +1,6 @@
 #include "lrdp/transport.hpp"
 #include <algorithm>
+#include <limits>
 #include <cerrno>
 #include <climits>
 #include <cstring>
@@ -83,7 +84,12 @@ void TlsStream::pump(int timeout_ms) {
         const auto front = output_.peek();
         if (!retry_size_) retry_size_ = std::min<std::size_t>(front.size(), 16384);
         const auto n = SSL_write(ssl_, front.data(), int(retry_size_));
-        if (n > 0) { output_.consume(std::size_t(n)); written_ += std::uint64_t(n); retry_size_ = 0; write_wait_ = POLLOUT; }
+        if (n > 0) {
+            require(std::uint64_t(n) <= std::numeric_limits<std::uint64_t>::max() - written_, "TLS byte counter exhausted");
+            written_ += std::uint64_t(n);
+            if (packet_sent_ && std::size_t(n) == front.size()) packet_sent_(output_.active_packet(), written_, Clock::now());
+            output_.consume(std::size_t(n)); retry_size_ = 0; write_wait_ = POLLOUT;
+        }
         else {
             const auto error = SSL_get_error(ssl_, n);
             require(error == SSL_ERROR_WANT_READ || error == SSL_ERROR_WANT_WRITE, "TLS write failed");
