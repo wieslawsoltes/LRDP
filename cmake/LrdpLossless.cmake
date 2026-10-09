@@ -1,0 +1,16 @@
+target_sources(lrdp_protocol PRIVATE src/clearcodec.cpp src/lossless.cpp src/graphics_lossless.cpp)
+if(BUILD_TESTING)
+  add_executable(lrdp_lossless_tests tests/lossless_tests.cpp)
+  target_link_libraries(lrdp_lossless_tests PRIVATE lrdp_protocol)
+  add_test(NAME lossless COMMAND lrdp_lossless_tests)
+endif()
+if(BUILD_TESTING AND TARGET lrdpd)
+  add_test(NAME lossless_session COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/lossless_integration.py $<TARGET_FILE:lrdpd>)
+  set_tests_properties(lossless_session PROPERTIES TIMEOUT 45)
+  if(FREERDP_CLIENT AND XVFB_EXECUTABLE)
+    add_test(NAME client_lossless COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/xvfb.py
+      ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/client_interop.py $<TARGET_FILE:lrdpd> ${FREERDP_CLIENT} --gfx-lossless)
+    set_tests_properties(client_lossless PROPERTIES TIMEOUT 45)
+  endif()
+endif()

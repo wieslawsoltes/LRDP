@@ -118,3 +118,5 @@ include(cmake/LrdpExtendedInput.cmake)
 include(cmake/LrdpDrives.cmake)
 
 include(cmake/LrdpAvc444.cmake)
+
+include(cmake/LrdpLossless.cmake)

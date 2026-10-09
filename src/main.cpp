@@ -56,7 +56,7 @@ void usage() {
               << "  [--allow-ntlm] [--listen 127.0.0.1] [--port 3389] [--max-sessions 4]\n"
               << "  [--drives-directory /private/0700/directory] [--drives-writable]\n"
               << "  [--backend demo|x11|portal|headless] [--display :0] [--fps 30] [--once]\n"
-              << "  [--gfx auto|off] [--encoder auto|software|vaapi|nvenc|raw] [--device /dev/dri/renderD128]\n"
+              << "  [--gfx auto|off] [--encoder auto|software|vaapi|nvenc|raw|lossless] [--device /dev/dri/renderD128]\n"
               << "  [--desktop-command /absolute/executable] [--desktop-arg ARG] [--xorg-executable /absolute/Xorg]\n"
               << "  [--audio] [--microphone]  Publish per-session virtual PipeWire devices.\n"
               << "  [--clipboard-rich] (HTML and images; x11/headless/portal)\n"
@@ -118,9 +118,9 @@ Configuration parse(int argc, char** argv) {
     require(!c.audio.playback && !c.audio.microphone, "this build has no PipeWire audio support");
 #endif
     require(c.video.backend == "auto" || c.video.backend == "software" || c.video.backend == "vaapi" ||
-            c.video.backend == "nvenc" || c.video.backend == "raw", "invalid video encoder");
+            c.video.backend == "nvenc" || c.video.backend == "raw" || c.video.backend == "lossless", "invalid video encoder");
 #ifndef LRDP_HAVE_FFMPEG
-    require(c.video.backend == "auto" || c.video.backend == "raw", "this build has no FFmpeg support");
+    require(c.video.backend == "auto" || c.video.backend == "raw" || c.video.backend == "lossless", "this build has no FFmpeg support");
 #endif
     require(!c.clipboard_rich || c.backend == "x11" || c.backend == "headless" || c.backend == "portal", "rich clipboard requires a native desktop backend");
     require(c.clipboard_root.empty() || c.backend == "x11" || c.backend == "headless" || c.backend == "portal", "file clipboard requires a native desktop backend");
@@ -128,6 +128,7 @@ Configuration parse(int argc, char** argv) {
 #ifndef LRDP_HAVE_FUSE
     require(c.drive_root.empty(), "this build has no libfuse3 drive mounting support");
 #endif
+    require(c.video.backend != "lossless" || c.graphics, "lossless graphics requires --gfx auto");
     c.video.fps = c.fps; return c;
 }
 int bind_listener(const Configuration& c) {
@@ -172,6 +173,7 @@ int serve(int fd, TlsContext& context, const Configuration& c, const VideoFactor
         if (c.backend == "demo") desktop = make_demo_desktop();
         require(desktop != nullptr, "selected desktop backend unavailable");
         Session session(std::move(desktop), negotiation.protocols, protocol, video, c.graphics);
+        if (c.video.backend == "lossless") session.configure_lossless_graphics();
 #ifdef LRDP_HAVE_FUSE
         std::unique_ptr<DriveMount> drive_mount;
         if (!c.drive_root.empty()) {
@@ -227,7 +229,7 @@ int main(int argc, char** argv) {
         std::signal(SIGPIPE, SIG_IGN); std::signal(SIGTERM, stop); std::signal(SIGINT, stop);
         TlsContext context(c.certificate, c.key); Socket listener(bind_listener(c)); VideoFactory video;
 #ifdef LRDP_HAVE_FFMPEG
-        if (c.video.backend != "raw") video = ffmpeg_video_factory(c.video);
+        if (c.video.backend != "raw" && c.video.backend != "lossless") video = ffmpeg_video_factory(c.video);
 #endif
         std::cout << "LRDP listening on " << c.listen << ':' << c.port << " (" << (c.nla ? "NLA" : "TLS laboratory profile")
                   << ", backend=" << c.backend << ")\n" << std::flush;
