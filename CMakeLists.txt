@@ -110,3 +110,5 @@ if(LRDP_BUILD_SERVER)
 endif()
 
 include(cmake/LrdpRichClipboard.cmake)
+
+include(cmake/LrdpExtendedInput.cmake)

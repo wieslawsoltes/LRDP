@@ -1,0 +1,6 @@
+target_sources(lrdp_protocol PRIVATE src/extended_wire.cpp src/extended_input.cpp)
+if(BUILD_TESTING)
+  add_executable(lrdp_extended_input_tests tests/extended_input_tests.cpp)
+  target_link_libraries(lrdp_extended_input_tests PRIVATE lrdp_protocol)
+  add_test(NAME extended_input COMMAND lrdp_extended_input_tests)
+endif()
