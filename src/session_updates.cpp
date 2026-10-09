@@ -72,6 +72,7 @@ void Session::share_packet(View payload) {
             channels_started_ = true;
             if (clipboard_channel_) for (const auto& pdu : clipboard_.start()) send_channel(*clipboard_channel_, pdu);
             start_audio();
+            start_drives();
             if (dynamic_channel_ && ((desktop_->resizable() && client_resize_) || graphics_requested_ || audio_dynamic_needed() || desktop_->extended_capabilities().touches))
                 send_channel(*dynamic_channel_, DynamicChannels::capabilities());
         }

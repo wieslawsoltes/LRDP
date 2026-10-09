@@ -8,6 +8,7 @@
 #include "audio/devices.hpp"
 #include "audio/output.hpp"
 #include "audio/input.hpp"
+#include "drive/client.hpp"
 #include <set>
 
 namespace lrdp {
@@ -19,6 +20,13 @@ class Session {
     SessionPhase phase_ = SessionPhase::connect;
     std::uint32_t requested_protocols_, selected_protocol_;
     std::set<std::uint16_t> joined_;
+    std::shared_ptr<drive::Bridge> drive_bridge_;
+    std::optional<drive::Protocol> drives_;
+    std::optional<std::uint16_t> drive_channel_;
+    std::deque<drive::Request> drive_requests_;
+    void start_drives();
+    void tick_drives();
+    bool receive_drives(std::uint16_t channel, View payload);
     Clipboard clipboard_;
     DynamicChannels dynamic_;
     std::optional<ExtendedInput> extended_;
@@ -72,6 +80,7 @@ public:
     ~Session();
     void configure_audio(std::unique_ptr<AudioDevices> devices);
     void configure_rich_clipboard();
+    void configure_drives(std::shared_ptr<drive::Bridge> bridge);
     void configure_file_clipboard(std::shared_ptr<ClipboardFileStore> store, FileClipboardLimits limits = {});
     const std::string& clipboard_status() const { return clipboard_status_; }
     void receive(View packet);
