@@ -47,6 +47,7 @@ class Session {
     PointerEncoder pointer_;
     Graphics graphics_;
     VideoFactory video_factory_;
+    bool lossless_graphics_ = false;
     std::unique_ptr<VideoWorker> video_;
     Frame previous_graphics_;
     std::uint64_t graphics_generation_ = 0;
@@ -55,6 +56,7 @@ class Session {
     void apply_clipboard(ClipboardResult result);
     void tick_clipboard();
     bool channels_started_ = false, suppressed_ = false;
+    bool reconnect_peer_ = false, reconnect_activated_ = false;
     bool synchronized_ = false, control_granted_ = false, client_resize_ = false;
     std::unique_ptr<AudioDevices> audio_;
     AudioOutput sound_;
@@ -89,6 +91,7 @@ public:
     NetworkBatch poll_network(NetworkAutodetect::Time now, bool transport_idle, bool application_data_pending);
     void network_transmitted(View whole_packet, std::uint64_t total_bytes, NetworkAutodetect::Time now);
     const NetworkAutodetect* network_metrics() const noexcept { return network_ ? &*network_ : nullptr; }
+    void configure_lossless_graphics();
     void configure_audio(std::unique_ptr<AudioDevices> devices);
     void configure_rich_clipboard();
     void configure_drives(std::shared_ptr<drive::Bridge> bridge);

@@ -6,6 +6,7 @@
 #endif
 #ifdef LRDP_HAVE_HEADLESS
 #include "lrdp/platform/headless_desktop.hpp"
+#include "lrdp/platform/persistent_desktop.hpp"
 #endif
 #ifdef LRDP_HAVE_GSSAPI
 #include "lrdp/security/nla_transport.hpp"
@@ -41,7 +42,7 @@ struct Configuration {
     bool laboratory = false, nla = false, allow_ntlm = false, once = false, graphics = true;
     VideoOptions video;
     AudioOptions audio;
-    std::string clipboard_root, drive_root;
+    std::string clipboard_root, drive_root, broker_socket;
     bool drives_writable = false, network_metrics = false;
     bool clipboard_rich = false;
     FileClipboardLimits clipboard_limits;
@@ -56,9 +57,10 @@ void usage() {
               << "  [--allow-ntlm] [--listen 127.0.0.1] [--port 3389] [--max-sessions 4]\n"
               << "  [--drives-directory /private/0700/directory] [--drives-writable]\n"
               << "  [--backend demo|x11|portal|headless] [--display :0] [--fps 30] [--once]\n"
-              << "  [--gfx auto|off] [--encoder auto|software|vaapi|nvenc|raw] [--device /dev/dri/renderD128]\n"
+              << "  [--gfx auto|off] [--encoder auto|software|vaapi|nvenc|raw|lossless] [--device /dev/dri/renderD128]\n"
               << "  [--desktop-command /absolute/executable] [--desktop-arg ARG] [--xorg-executable /absolute/Xorg]\n"
               << "  [--network-metrics]  Opt-in continuous RTT and passive receive-throughput diagnostics.\n"
+              << "  [--session-broker /private/directory/broker.sock] (headless only; applications survive disconnect)\n"
               << "  [--audio] [--microphone]  Publish per-session virtual PipeWire devices.\n"
               << "  [--clipboard-rich] (HTML and images; x11/headless/portal)\n"
               << "  [--clipboard-files DIRECTORY] [--clipboard-max-mib 256] (x11/headless/portal; private staging)\n"
@@ -78,6 +80,7 @@ Configuration parse(int argc, char** argv) {
         else if (option == "--desktop-arg") c.headless.command.push_back(value());
         else if (option == "--xorg-executable") c.headless.xorg = value();
 #endif
+        else if (option == "--session-broker") c.broker_socket = value();
         else if (option == "--listen") c.listen = value(); else if (option == "--port") c.port = number(value(), 65535);
         else if (option == "--fps") c.fps = number(value(), 120);
         else if (option == "--max-sessions") c.max_sessions = number(value(), 64);
@@ -120,16 +123,18 @@ Configuration parse(int argc, char** argv) {
     require(!c.audio.playback && !c.audio.microphone, "this build has no PipeWire audio support");
 #endif
     require(c.video.backend == "auto" || c.video.backend == "software" || c.video.backend == "vaapi" ||
-            c.video.backend == "nvenc" || c.video.backend == "raw", "invalid video encoder");
+            c.video.backend == "nvenc" || c.video.backend == "raw" || c.video.backend == "lossless", "invalid video encoder");
 #ifndef LRDP_HAVE_FFMPEG
-    require(c.video.backend == "auto" || c.video.backend == "raw", "this build has no FFmpeg support");
+    require(c.video.backend == "auto" || c.video.backend == "raw" || c.video.backend == "lossless", "this build has no FFmpeg support");
 #endif
     require(!c.clipboard_rich || c.backend == "x11" || c.backend == "headless" || c.backend == "portal", "rich clipboard requires a native desktop backend");
     require(c.clipboard_root.empty() || c.backend == "x11" || c.backend == "headless" || c.backend == "portal", "file clipboard requires a native desktop backend");
+    require(c.broker_socket.empty() || c.backend == "headless", "persistent sessions require --backend headless");
     require(!c.drives_writable || !c.drive_root.empty(), "--drives-writable requires --drives-directory");
 #ifndef LRDP_HAVE_FUSE
     require(c.drive_root.empty(), "this build has no libfuse3 drive mounting support");
 #endif
+    require(c.video.backend != "lossless" || c.graphics, "lossless graphics requires --gfx auto");
     c.video.fps = c.fps; return c;
 }
 int bind_listener(const Configuration& c) {
@@ -154,9 +159,10 @@ int serve(int fd, TlsContext& context, const Configuration& c, const VideoFactor
             write_raw(fd, negotiation_reply(c.nla ? 5 : 1, true)); throw ProtocolError("required RDP security protocol was not offered");
         }
         write_raw(fd, negotiation_reply(protocol)); TlsStream stream(fd, context);
+        std::string principal = "lrdp:loopback-laboratory";
 #ifdef LRDP_HAVE_GSSAPI
         if (c.nla) {
-            const auto principal = authenticate_nla(stream.native_tls(), fd, {c.service, c.allow_ntlm},
+            principal = authenticate_nla(stream.native_tls(), fd, {c.service, c.allow_ntlm},
                 [&](const std::string& identity) { return c.principals.contains(identity); });
             std::cout << "NLA principal authorized: " << principal << '\n' << std::flush;
         }
@@ -169,11 +175,13 @@ int serve(int fd, TlsContext& context, const Configuration& c, const VideoFactor
         if (c.backend == "portal") desktop = make_portal_desktop();
 #endif
 #ifdef LRDP_HAVE_HEADLESS
-        if (c.backend == "headless") desktop = make_headless_desktop(c.headless);
+        if (c.backend == "headless") desktop = c.broker_socket.empty() ? make_headless_desktop(c.headless)
+            : make_persistent_desktop(c.broker_socket, c.laboratory ? principal : "nla:" + principal);
 #endif
         if (c.backend == "demo") desktop = make_demo_desktop();
         require(desktop != nullptr, "selected desktop backend unavailable");
         Session session(std::move(desktop), negotiation.protocols, protocol, video, c.graphics);
+        if (c.video.backend == "lossless") session.configure_lossless_graphics();
 #ifdef LRDP_HAVE_FUSE
         std::unique_ptr<DriveMount> drive_mount;
         if (!c.drive_root.empty()) {
@@ -262,7 +270,7 @@ int main(int argc, char** argv) {
         std::signal(SIGPIPE, SIG_IGN); std::signal(SIGTERM, stop); std::signal(SIGINT, stop);
         TlsContext context(c.certificate, c.key); Socket listener(bind_listener(c)); VideoFactory video;
 #ifdef LRDP_HAVE_FFMPEG
-        if (c.video.backend != "raw") video = ffmpeg_video_factory(c.video);
+        if (c.video.backend != "raw" && c.video.backend != "lossless") video = ffmpeg_video_factory(c.video);
 #endif
         std::cout << "LRDP listening on " << c.listen << ':' << c.port << " (" << (c.nla ? "NLA" : "TLS laboratory profile")
                   << ", backend=" << c.backend << ")\n" << std::flush;

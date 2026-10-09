@@ -36,7 +36,7 @@ The virtual-channel protocol and request scheduling run on the RDP event loop. A
 - One open-directory snapshot is limited to 4,096 entries and 1 MiB; total retained FUSE directory snapshots are capped at 16 MiB. Reopen a directory to refresh its snapshot.
 - Kernel content and metadata caching are disabled. The client owns actual file contents and may change them concurrently.
 - Peer writes are acknowledged before native completion, but this does not promise stable-storage durability. `fsync`, `O_SYNC`, `O_DSYNC` and atomic `O_APPEND` are explicitly unsupported rather than silently emulated.
-- Locks, ACLs, xattrs, hardlinks, sparse-file control, symlinks, statfs, change notifications and server-side printer/device redirection are not implemented here.
+- Locks, ACLs, arbitrary remote extended attributes, hardlinks, sparse-file control, symlinks, change notifications and server-side printer/device redirection are not implemented here. Read-only volume annotations and capacity reporting are described below.
 - Timeout or native mount failure terminates the session to retire potentially live remote handles. Orderly teardown disconnects waiters, unmounts and removes the private mount directory. A killed/crashed process may require `fusermount3 -u` or administrator recovery; no recursive deletion of client files occurs.
 - Remote paths reject parent traversal, embedded NUL, alternate data streams, UNC prefixes and ambiguous separator/components. The informational client computer-name field alone accepts extra trailing UTF-16 NULs for observed client interoperability. Authenticated names and file paths retain strict parsing.
 
@@ -54,3 +54,15 @@ Protocol/bridge/session fixtures also validate out-of-order completions, partial
 - [Client Name Request](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/902497f1-3b1c-4aee-95f8-1668f9b7b7d2), section 2.2.2.4.
 
 Wire code is original and specification-derived. The independent client is used as a black-box interoperability test; no other RDP implementation source is copied or imported.
+
+### Capacity and descriptive volume metadata
+
+The redirected volume's `statvfs` now queries actual client allocation geometry
+and quota-aware availability, with explicit unsupported-class fallback. The C++ facade
+combines remote volume/device read-only flags with local mount policy. Linux FUSE
+ignores the callback f_flag, so OS-level flags still describe the mount rather
+than per-drive remounting; remote flags remain available in the annotations. The
+synthetic mount root does not sum potentially aliased client volumes.
+Read-only `user.lrdp.volume.*` xattrs expose labels, filesystem names, serials and
+capabilities; these are generated annotations, not arbitrary EA/ACL redirection.
+See [DRIVE_CAPACITY.md](DRIVE_CAPACITY.md) for formats, error policy and limits.

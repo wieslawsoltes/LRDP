@@ -28,7 +28,7 @@ void Session::static_channel(std::uint16_t channel, View payload) {
                 if (!graphics_.ready()) {
                     graphics_.reset(active_layout_); graphics_reset_ = false; previous_graphics_ = {};
                     if (graphics_.video_enabled()) video_ = std::make_unique<VideoWorker>(video_factory_, graphics_.video_codec());
-                    graphics_status_ = graphics_.video_enabled() ? std::string(codec_name(graphics_.video_codec())) + " negotiated; encoder initialization pending" : "GFX uncompressed BGRA";
+                    graphics_status_ = graphics_.video_enabled() ? std::string(codec_name(graphics_.video_codec())) + " negotiated; encoder initialization pending" : lossless_graphics_ ? "GFX lossless ClearCodec/solid/raw" : "GFX uncompressed BGRA";
                 }
                 flush_graphics();
             }

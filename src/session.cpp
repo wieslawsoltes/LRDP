@@ -4,16 +4,6 @@
 #include <cerrno>
 
 namespace lrdp {
-namespace {
-void validate_client_info(View payload) {
-    Reader in(payload); require(in.le16() == 0x40 && in.le16() == 0, "expected protected Client Info");
-    in.skip(4); const auto flags = in.le32(); require(flags & 0x10, "Unicode Client Info required");
-    unsigned lengths[5];
-    for (auto& n : lengths) { n = in.le16(); require(n <= 4096 && !(n & 1), "Client Info string exceeds policy"); }
-    for (const auto n : lengths) { Reader value(in.take(n + 2)); value.skip(n); require(value.le16() == 0, "unterminated Client Info string"); }
-    require(in.remaining() <= 8192, "extended Client Info exceeds policy");
-}
-}
 Session::Session(std::unique_ptr<Desktop> desktop, std::uint32_t requested, std::uint32_t selected, VideoFactory video, bool graphics)
     : desktop_(std::move(desktop)), requested_protocols_(requested), selected_protocol_(selected),
       video_factory_(std::move(video)), graphics_enabled_(graphics) { require(desktop_ != nullptr, "session requires a desktop"); }
@@ -34,7 +24,7 @@ void Session::activate() {
     invalidate_graphics(); graphics_reset_ = true; active_layout_ = desktop_->layout();
     require(active_layout_.width <= 65535 && active_layout_.height <= 65535, "desktop exceeds basic RDP bounds");
     send_global(demand_active(std::uint16_t(active_layout_.width), std::uint16_t(active_layout_.height), settings_.depth,
-                              desktop_->resizable(), desktop_->unicode_input()));
+                              desktop_->resizable(), desktop_->unicode_input(), desktop_->reconnection()!=nullptr));
     if (settings_.early_caps & 0x40) send_global(monitor_layout_pdu(active_layout_));
     synchronized_ = control_granted_ = false; phase_ = SessionPhase::confirm;
 }
@@ -91,7 +81,11 @@ void Session::receive(View packet) {
     if (receive_network(channel, data)) return;
     if (phase_ == SessionPhase::info) {
         require(channel == global_channel, "Client Info must use global channel");
-        validate_client_info(data); send_global(valid_client_license()); activate(); return;
+        const auto cookie = client_info_reconnect(data);
+        if (auto* reconnect = desktop_->reconnection()) reconnect->prepare(cookie);
+        else require(!cookie, "reconnection is not enabled on this backend");
+        display_.emplace(desktop_->layout());
+        send_global(valid_client_license()); activate(); return;
     }
     if (channel == global_channel) {
         Reader shares(data);
