@@ -203,7 +203,10 @@ class X11Desktop final : public Desktop {
         }
         if (notification && type == incr_) {
             if (format != 32 || count != 1 || *reinterpret_cast<unsigned long*>(raw) > selection_limit()) { cancel_incoming(); return; }
-            incoming_->incremental = true; XDeleteProperty(d(), incoming_->window, property_); XFlush(d()); return;
+            // XGetWindowProperty(delete=True) already acknowledged this header.
+            // Deleting again can destroy the owner's first data chunk when it
+            // responds before this thread resumes from the synchronous read.
+            incoming_->incremental = true; XFlush(d()); return;
         }
         if (type != incoming_->target || format != 8 || count > selection_limit() - incoming_->bytes.size()) { cancel_incoming(); return; }
         if (count) incoming_->bytes.insert(incoming_->bytes.end(), raw, raw + count);
