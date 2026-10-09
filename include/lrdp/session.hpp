@@ -41,6 +41,7 @@ class Session {
     PointerEncoder pointer_;
     Graphics graphics_;
     VideoFactory video_factory_;
+    bool lossless_graphics_ = false;
     std::unique_ptr<VideoWorker> video_;
     Frame previous_graphics_;
     std::uint64_t graphics_generation_ = 0;
@@ -79,6 +80,7 @@ public:
     explicit Session(std::unique_ptr<Desktop> desktop, std::uint32_t requested_protocols,
                      std::uint32_t selected_protocol = 1, VideoFactory video = {}, bool graphics = true);
     ~Session();
+    void configure_lossless_graphics();
     void configure_audio(std::unique_ptr<AudioDevices> devices);
     void configure_rich_clipboard();
     void configure_drives(std::shared_ptr<drive::Bridge> bridge);

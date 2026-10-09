@@ -25,6 +25,24 @@ while True:
     time.sleep(.02)
 assert len(drives)==1, drives
 root=drives[0]
+capacity=os.statvfs(root)
+assert capacity.f_frsize>0 and capacity.f_blocks>0
+assert 0<=capacity.f_bavail<=capacity.f_bfree<=capacity.f_blocks
+assert bool(capacity.f_flag & os.ST_RDONLY)==(mode=='readonly')
+assert os.statvfs(mount).f_blocks==0, 'virtual namespace must not duplicate physical capacity'
+annotations=set(os.listxattr(root))
+assert 'user.lrdp.volume.filesystem' in annotations, annotations
+assert os.getxattr(root,'user.lrdp.volume.filesystem').decode('utf-8')
+assert os.getxattr(root,'user.lrdp.volume.serial').startswith(b'0x')
+assert 0<int(os.getxattr(root,'user.lrdp.volume.max-component-utf16'))<=255
+try: os.getxattr(root,'user.lrdp.volume.not-a-field')
+except OSError as e: assert e.errno==errno.ENODATA,e
+else: raise AssertionError('unknown volume metadata was fabricated')
+try: os.setxattr(root,'user.lrdp.volume.label',b'not-a-remote-rename')
+except OSError as e: assert e.errno in (errno.EOPNOTSUPP,errno.EROFS,errno.EACCES),e
+else: raise AssertionError('read-only metadata accepted mutation')
+assert not os.listxattr(mount), 'synthetic mount root has no real volume metadata'
+
 source=root/'日本語.bin'
 expected=bytes((i*17+3)%256 for i in range(180003))
 assert source.read_bytes()==expected
