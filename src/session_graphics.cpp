@@ -28,8 +28,8 @@ void Session::tick(bool transport_ready, bool capture_due) {
                 } else if (result->generation == graphics_generation_) {
                     require(result->frame.has_value(), "encoder returned an empty completion");
                     const auto& frame = *result->frame;
-                    graphics_.video_frame(frame.annex_b, frame.width, frame.height);
-                    graphics_status_ = frame.encoder + (frame.hardware ? " (hardware encode; CPU capture/upload)" : " (software encode)");
+                    graphics_.video_frame(frame);
+                    graphics_status_ = frame.encoder + (frame.hardware ? " (hardware encode; CPU capture/upload)" : " (software encode)") + " " + codec_name(frame.codec);
                     flush_graphics(); return;
                 }
             }
