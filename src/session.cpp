@@ -42,11 +42,13 @@ void Session::reactivate() {
     suspend_extended(); release_all_input(); Writer body; body.le32(share_id).le16(0); send_global(share_control(6, body.bytes())); activate();
 }
 void Session::receive(View packet) {
+    last_packet_network_ = false;
     require(phase_ != SessionPhase::closed && !packet.empty(), "session closed or packet empty");
     if (packet[0] != 3) { require(active() || phase_ == SessionPhase::finalize, "fast-path input before Confirm Active"); input_fast(packet); return; }
     const auto payload = parse_x224_data(packet);
     if (phase_ == SessionPhase::connect) {
         settings_ = connect_initial(payload, selected_protocol_);
+        negotiate_network();
         graphics_requested_ = graphics_enabled_ && (settings_.early_caps & 0x100);
         if (desktop_->resizable()) {
             Monitor monitor; monitor.width = (settings_.width + 1U) & ~1U; monitor.height = settings_.height;
@@ -72,12 +74,12 @@ void Session::receive(View packet) {
     if (command == 0x38) {
         require(phase_ == SessionPhase::join, "MCS ChannelJoin out of sequence");
         require(in.be16() == client_user - 1001, "wrong MCS initiator"); const auto channel = in.be16(); in.end();
-        require(channel == client_user || channel == global_channel ||
+        require(channel == client_user || channel == global_channel || (settings_.message_channel && channel == settings_.message_channel) ||
             std::find(settings_.channel_ids.begin(), settings_.channel_ids.end(), channel) != settings_.channel_ids.end(), "unauthorized channel join");
         require(joined_.insert(channel).second, "duplicate MCS ChannelJoin");
         Writer response; response.u8(0x3e).u8(0).be16(client_user - 1001).be16(channel).be16(channel);
         outbound_.push_back(x224_data(response.bytes()));
-        if (joined_.size() == settings_.channel_ids.size() + 2) phase_ = SessionPhase::info;
+        if (joined_.size() == settings_.channel_ids.size() + 2 + (settings_.message_channel ? 1U : 0U)) phase_ = SessionPhase::info;
         return;
     }
     if ((command & 0xfc) == 0x20) { release_all_input(); phase_ = SessionPhase::closed; return; }
@@ -86,6 +88,7 @@ void Session::receive(View packet) {
     const auto channel = in.be16(); require(joined_.contains(channel), "data on unjoined channel");
     require(in.u8() == 0x70, "segmented MCS data was not negotiated");
     const auto data = in.take(in.per_length()); in.end();
+    if (receive_network(channel, data)) return;
     if (phase_ == SessionPhase::info) {
         require(channel == global_channel, "Client Info must use global channel");
         validate_client_info(data); send_global(valid_client_license()); activate(); return;

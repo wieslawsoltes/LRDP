@@ -9,6 +9,8 @@ struct ClientSettings {
     std::uint16_t width = 1280, height = 720, depth = 24;
     std::uint32_t keyboard_layout = 0;
     std::uint16_t early_caps = 0;
+    bool message_channel_requested = false;
+    std::uint16_t message_channel = 0; // Separate from the static channel ID array.
     std::optional<Layout> monitors;
     std::map<std::string, std::uint16_t> channels;
     std::vector<std::uint16_t> channel_ids;

@@ -1,5 +1,6 @@
 #pragma once
 #include "channels.hpp"
+#include "network_autodetect.hpp"
 #include "clipboard.hpp"
 #include "desktop.hpp"
 #include "mcs.hpp"
@@ -27,6 +28,11 @@ class Session {
     void start_drives();
     void tick_drives();
     bool receive_drives(std::uint16_t channel, View payload);
+    bool last_packet_network_ = false;
+    std::optional<NetworkPolicy> network_policy_;
+    std::optional<NetworkAutodetect> network_;
+    void negotiate_network();
+    bool receive_network(std::uint16_t channel, View payload);
     Clipboard clipboard_;
     DynamicChannels dynamic_;
     std::optional<ExtendedInput> extended_;
@@ -78,6 +84,11 @@ public:
     explicit Session(std::unique_ptr<Desktop> desktop, std::uint32_t requested_protocols,
                      std::uint32_t selected_protocol = 1, VideoFactory video = {}, bool graphics = true);
     ~Session();
+    void configure_network_metrics(NetworkPolicy policy = {});
+    bool last_packet_was_network() const noexcept { return last_packet_network_; }
+    NetworkBatch poll_network(NetworkAutodetect::Time now, bool transport_idle, bool application_data_pending);
+    void network_transmitted(View whole_packet, std::uint64_t total_bytes, NetworkAutodetect::Time now);
+    const NetworkAutodetect* network_metrics() const noexcept { return network_ ? &*network_ : nullptr; }
     void configure_audio(std::unique_ptr<AudioDevices> devices);
     void configure_rich_clipboard();
     void configure_drives(std::shared_ptr<drive::Bridge> bridge);

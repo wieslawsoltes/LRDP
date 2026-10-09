@@ -11,9 +11,12 @@ int main(){
   const auto active=queue.peek();const auto* identity=active.data();
   queue.enqueue({Bytes{9},Bytes{8}},true);
   check(queue.peek().data()==identity && queue.peek()[0]==1,"TLS retry preserves active pointer despite urgent enqueue");
+  check(queue.active_packet().data()==identity && queue.active_packet().size()==3,"whole-packet observation does not select or copy");
   queue.consume(1);check(queue.peek()[0]==2 && queue.peek().size()==2,"partial packet remains active");
+  check(queue.active_packet().data()==identity && queue.active_packet()[0]==1 && queue.active_packet().size()==3,"completion sees original header after partial writes");
   queue.consume(2);check(queue.peek()[0]==9,"media preempts only at a packet boundary");queue.consume(1);
   check(queue.peek()[0]==8,"media FIFO order");queue.consume(1);check(queue.peek()[0]==4,"ordinary packet follows media");queue.consume(1);
+  check(queue.active_packet().empty(),"completed packet view retired");
   check(queue.queued()==0 && queue.peek().empty(),"queue accounting drains to zero");
   queue.enqueue({Bytes{42}});std::vector<Bytes> media(20,Bytes{7});queue.enqueue(std::move(media),true);
   unsigned count=0;while(queue.peek()[0]==7){queue.consume(1);++count;}

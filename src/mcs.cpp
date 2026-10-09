@@ -67,6 +67,9 @@ ClientSettings connect_initial(View payload, std::uint32_t selected_protocol) {
                 require(settings.channels.emplace(text, id).second, "duplicate static channel name");
                 settings.channel_ids.push_back(id); data.skip(4);
             }
+        } else if (type == 0xc006) {
+            require(data.remaining() == 4 && data.le32() == 0, "invalid Client Message Channel Data");
+            settings.message_channel_requested = true;
         } else if (type == 0xc005) monitor_data = data.take(data.remaining());
         else if (type == 0xc008) monitor_attributes = data.take(data.remaining());
         // Unknown optional GCC extensions are length-delimited and not advertised in response.
@@ -91,12 +94,19 @@ Bytes connect_response(const ClientSettings& settings, std::uint32_t requested_p
     for (auto id : settings.channel_ids) net.le16(id);
     if (settings.channel_ids.size() & 1) net.le16(0);
     block(blocks, 0x0c03, net);
+    if (settings.message_channel_requested || settings.message_channel) {
+        require(settings.message_channel == 0 ||
+                (settings.message_channel > global_channel &&
+                 std::find(settings.channel_ids.begin(), settings.channel_ids.end(), settings.message_channel) == settings.channel_ids.end()),
+                "message channel collides with a static or user channel");
+        Writer message; message.le16(settings.message_channel); block(blocks, 0x0c04, message);
+    }
     Writer response; response.raw({0x14,0x76,0x0a,1,1,0,1,0xc0,0,'M','c','D','n'}).per_length(blocks.size()).raw(blocks.bytes());
     Writer gcc; gcc.raw({0,5,0,0x14,0x7c,0,1});
     // T.124 connectPDU length is ignored by RDP clients; emit its actual length.
     gcc.per_length(response.size()).raw(response.bytes());
     Writer parameters;
-    for (std::uint32_t value : {34U,3U,0U,1U,0U,1U,65528U,2U}) parameters.raw(ber_integer(value));
+    for (std::uint32_t value : {settings.message_channel ? 35U : 34U,3U,0U,1U,0U,1U,65528U,2U}) parameters.raw(ber_integer(value));
     Writer body; body.raw(ber_integer(0, 10)).raw(ber_integer(0)).tlv(0x30, parameters.bytes()).tlv(4, gcc.bytes());
     return ber(0x7f66, body.bytes());
 }
