@@ -4,6 +4,8 @@ A specification-derived native C++20 Linux RDP server. The wire stack is origina
 
 **Experimental, not complete Windows RDP parity or a production security certification.** See [implementation status](docs/IMPLEMENTATION_STATUS.md), [security boundaries](docs/SECURITY.md) and [provenance](docs/CLEAN_ROOM.md).
 
+For opt-in retained Xorg/application sessions, see [persistent headless reconnection](docs/PERSISTENT_SESSIONS.md). The broker keeps applications alive across RDP-worker loss; it does not provide PAM impersonation or host-restart recovery.
+
 ## Implemented paths
 
 | Area | Available implementation |
@@ -11,12 +13,14 @@ A specification-derived native C++20 Linux RDP server. The wire stack is origina
 | Connection | TLS, CredSSP v5/v6 NLA through system GSSAPI, exact principal authorization, bounded per-connection child processes |
 | Desktops | Existing X11 desktop, consent-based Wayland portal/PipeWire capture, private rootless Xorg/dummy desktop, diagnostic desktop |
 | Resizing | Private desktop RandR resizing, initial monitor topology, negative monitor origins, reactivation without restarting the desktop application |
-| Graphics | Dirty-tile bitmaps, acknowledged RDP GFX surfaces, AVC420 encoder path, VA-API/NVENC implementations and software fallback |
-| Cursor | Native XFixes shape/hotspot capture, alpha and legacy pointer updates, bounded exact LRU cache, hidden cursor |
-| Clipboard | Unicode text; opt-in file and directory copying for X11/headless desktops with a confined filesystem provider |
+| Graphics | Dirty-tile bitmaps, acknowledged RDP GFX surfaces, AVC420/AVC444/AVC444v2 encoding, VA-API/NVENC implementations and software fallback |
+| Cursor | Native XFixes shape/hotspot capture, negotiated 32/96/384-pixel updates, bounded fragmentation and exact LRU cache, hidden cursor |
+| Clipboard | Unicode text; opt-in HTML/images and confined file/directory copying for X11/headless and consented Wayland portal sessions |
 | Audio | Per-session PipeWire virtual speakers and microphone; PCM RDPSND and AUDIO_INPUT channels |
+| Client drives | Opt-in RDPDR redirection through owner-only FUSE mounts with bounded asynchronous I/O; readonly by default |
+| Reconnection | Opt-in rootless broker retaining private Xorg/applications across worker loss; exact principal and ARC verifier required |
 
-Hardware encoding currently retains CPU capture, color conversion and upload. The portal path has not been verified against a real GNOME/Plasma session. Cursor output is currently limited to 32 x 32; larger native shapes are scaled. File clipboard is not yet connected to the Wayland portal backend.
+Hardware encoding currently retains CPU capture, color conversion and upload. The portal path has not been verified against a real GNOME/Plasma session. Cursor size depends on negotiated client capabilities. Persistence retains a private Xorg desktop, not an existing physical or Wayland session; the broker does not survive its own restart.
 
 ## Build
 
@@ -76,4 +80,4 @@ The default policy allows 128 file/directory descriptors and 256 MiB, uses four 
 
 [CI run 37832552839](https://github.com/wieslawsoltes/LRDP/actions/runs/37832552839), for code revision `b3c4cea5023c7cd96fe787a8b6daf53161afb533`, passed the sanitizer build, 24 of 25 registered tests, the Release build and the protocol-only configuration. The remaining test was explicitly skipped because the installed independent client lacks AVC420 support; it is not a passing interoperability result.
 
-The native file-clipboard fixture uses a real TLS session, private Xorg and an independent Xlib application. It checks byte-exact export/import, out-of-order chunks, clipboard paste, cursor hotspots, output suppression, traversal rejection and cleanup. Windows file-clipboard/client certification, physical GPU execution, AVC444, zero-copy capture, device redirection, RemoteApp, UDP/gateway transports, persistent reconnect, a PAM login broker and full touch/pen/IME coverage remain unfinished.
+The native file-clipboard fixture uses a real TLS session, private Xorg and an independent Xlib application. It checks byte-exact export/import, out-of-order chunks, clipboard paste, cursor hotspots, output suppression, traversal rejection and cleanup. Windows file-clipboard/client certification, physical GPU execution, zero-copy capture, remaining peripheral redirection, RemoteApp, UDP/gateway transports, broker/host-restart recovery, a PAM login broker and complete native pen/IME coverage remain unfinished. Feature-specific guides record newer tests and exact limitations.
