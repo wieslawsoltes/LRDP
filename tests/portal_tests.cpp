@@ -34,6 +34,9 @@ const char* xml = R"XML(<node>
  <method name="NotifyPointerButton"><arg type="o" direction="in"/><arg type="a{sv}" direction="in"/><arg type="i" direction="in"/><arg type="u" direction="in"/></method>
  <method name="NotifyKeyboardKeycode"><arg type="o" direction="in"/><arg type="a{sv}" direction="in"/><arg type="i" direction="in"/><arg type="u" direction="in"/></method>
  <method name="NotifyKeyboardKeysym"><arg type="o" direction="in"/><arg type="a{sv}" direction="in"/><arg type="i" direction="in"/><arg type="u" direction="in"/></method>
+ <method name="NotifyTouchDown"><arg type="o" direction="in"/><arg type="a{sv}" direction="in"/><arg type="u" direction="in"/><arg type="u" direction="in"/><arg type="d" direction="in"/><arg type="d" direction="in"/></method>
+ <method name="NotifyTouchMotion"><arg type="o" direction="in"/><arg type="a{sv}" direction="in"/><arg type="u" direction="in"/><arg type="u" direction="in"/><arg type="d" direction="in"/><arg type="d" direction="in"/></method>
+ <method name="NotifyTouchUp"><arg type="o" direction="in"/><arg type="a{sv}" direction="in"/><arg type="u" direction="in"/></method>
  <method name="NotifyPointerAxisDiscrete"><arg type="o" direction="in"/><arg type="a{sv}" direction="in"/><arg type="u" direction="in"/><arg type="i" direction="in"/></method>
 </interface>
 <interface name="org.freedesktop.portal.ScreenCast">
@@ -64,6 +67,7 @@ class FakePortal {
     std::string session_, peer_, copied_;
     std::map<std::string, std::string> source_;
     std::map<unsigned, UniqueFd> writes_;
+    std::map<unsigned, std::pair<double,double>> touches_;
     bool clipboard_requested_ = false, started_ = false;
     void signal(const char* name, GVariant* parameters, const char* iface = clip, const char* path = object) {
         GError* error = nullptr;
@@ -99,7 +103,7 @@ class FakePortal {
                 objects_.push_back(g_dbus_connection_register_object(bus_, session_.c_str(), interfaces_->interfaces[3], &table, this, nullptr, nullptr));
                 result = dict({{"session_handle", g_variant_new_string(session_.c_str())}});
             } else if (method == "SelectDevices") {
-                guint types = 0; check(g_variant_lookup(options, "types", "u", &types) && types == 3, "wrong input-device request"); result = dict();
+                guint types = 0; check(g_variant_lookup(options, "types", "u", &types) && types == 7, "wrong input-device request"); result = dict();
             } else if (method == "SelectSources") {
                 guint types = 0, cursor = 0; gboolean multiple = TRUE;
                 check(g_variant_lookup(options, "types", "u", &types) && types == 1, "wrong capture source request");
@@ -109,7 +113,7 @@ class FakePortal {
                 check(clipboard_requested_, "clipboard must be requested before Start"); started_ = true;
                 GVariantBuilder streams; g_variant_builder_init(&streams, G_VARIANT_TYPE("a(ua{sv})"));
                 g_variant_builder_add(&streams, "(u@a{sv})", 42U, dict({{"size", g_variant_new("(ii)", 1280, 720)}, {"pipewire-serial", g_variant_new_uint64(9000000001ULL)}}));
-                result = dict({{"devices", g_variant_new_uint32(3)}, {"streams", g_variant_builder_end(&streams)},
+                result = dict({{"devices", g_variant_new_uint32(grant_touch ? 7U : 3U)}, {"streams", g_variant_builder_end(&streams)},
                     {"clipboard_enabled", g_variant_new_boolean(grant_clipboard.load())}});
             }
             // Emit before returning the method handle: catches subscribe-after-call races.
@@ -136,6 +140,19 @@ class FakePortal {
             } else ++failed_copies;
         } else if (method == "SetSelection") {
             ++selections; signal("SelectionOwnerChanged", g_variant_new("(o@a{sv})", session_.c_str(), dict({{"session_is_owner", g_variant_new_boolean(TRUE)}})));
+        } else if (method == "NotifyTouchDown" || method == "NotifyTouchMotion" || method == "NotifyTouchUp") {
+            check(grant_touch, "touch was injected without consent");
+            const gchar* path = nullptr; GVariant* options = nullptr; guint stream = 0, slot = 0; double x = 0, y = 0;
+            if (method == "NotifyTouchUp") {
+                g_variant_get(parameters, "(&o@a{sv}u)", &path, &options, &slot);
+                check(touches_.erase(slot) == 1, "touch release without a live slot");
+            } else {
+                g_variant_get(parameters, "(&o@a{sv}uudd)", &path, &options, &stream, &slot, &x, &y);
+                check(stream == 42 && slot < 32 && x == 50 && y == 40, "touch stream/slot/logical coordinates");
+                check(touches_.contains(slot) == (method == "NotifyTouchMotion"), "invalid native touch lifecycle");
+                touches_[slot] = {x,y};
+            }
+            g_variant_unref(options); check(path == session_, "touch on wrong session"); ++touch_events;
         } else if (std::string_view(iface) == remote && method.starts_with("Notify")) ++inputs;
         else throw std::runtime_error("unknown fake portal method");
         g_dbus_method_invocation_return_value(invocation, nullptr);
@@ -149,13 +166,13 @@ class FakePortal {
         };
         value.get_property = [](GDBusConnection*, const gchar*, const gchar*, const gchar* iface, const gchar* name, GError**, gpointer) -> GVariant* {
             if (std::string_view(name) == "version") return g_variant_new_uint32(std::string_view(iface) == remote ? 2 : std::string_view(iface) == screen ? 6 : 1);
-            return g_variant_new_uint32(std::string_view(name) == "AvailableSourceTypes" ? 1 : std::string_view(name) == "AvailableCursorModes" ? 2 : 3);
+            return g_variant_new_uint32(std::string_view(name) == "AvailableSourceTypes" ? 1 : std::string_view(name) == "AvailableCursorModes" ? 2 : 7);
         };
         return value;
     }
 public:
-    std::atomic<bool> failed = false, deny_start = false, grant_clipboard = true;
-    std::atomic<unsigned> inputs = 0, selections = 0, closes = 0, successful_copies = 0, failed_copies = 0;
+    std::atomic<bool> failed = false, deny_start = false, grant_clipboard = true, grant_touch = true;
+    std::atomic<unsigned> inputs = 0, selections = 0, closes = 0, successful_copies = 0, failed_copies = 0, touch_events = 0;
     explicit FakePortal(const char* address) {
         std::promise<void> started; auto ready = started.get_future();
         thread_ = std::thread([&, location = std::string(address)] {
@@ -211,6 +228,13 @@ int main() {
                     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
                     while (!condition()) { session.poll(); check(!fake.failed && std::chrono::steady_clock::now() < deadline, "portal test timed out"); ::poll(nullptr, 0, 1); }
                 };
+                check(session.touch_available(), "granted touch permission not advertised");
+                TouchInjector touches([&](auto operations) { session.touch_batch(operations); });
+                ExtendedContact contact; contact.id = 250; contact.flags = 25; contact.x = 100; contact.y = 80;
+                ExtendedFrame frame{Digitizer::touch, 0, 0, {contact}};
+                touches.apply(std::span(&frame,1),400,200,200,100);
+                frame.contacts[0].flags = 26; touches.apply(std::span(&frame,1),400,200,200,100);
+                touches.cancel(); until([&] { return fake.touch_events == 3; });
                 session.pointer(100.5, 200.25); session.button(272, true); session.button(272, false);
                 session.key(30, true); session.key(30, false); session.keysym(0x0101f680, true); session.keysym(0x0101f680, false); session.wheel(false, -1);
                 until([&] { return fake.inputs == 8; });
@@ -258,11 +282,15 @@ int main() {
                 check(rejected, "revoked portal session remained usable");
             }
             check(fake.closes == 1, "portal session was not closed on destruction");
-            fake.grant_clipboard = false;
+            fake.grant_clipboard = false; fake.grant_touch = false;
             { PortalSession no_clipboard; check(!no_clipboard.clipboard_available() && !no_clipboard.enable_file_clipboard() && !no_clipboard.enable_rich_clipboard(), "denied clipboard was advertised"); }
+            { PortalSession no_touch; check(!no_touch.touch_available(), "denied touch capability was advertised");
+              const TouchOperation op{TouchAction::down,0,50,40}; bool rejected = false;
+              try { no_touch.touch_batch(std::span(&op,1)); } catch (const ProtocolError&) { rejected = true; }
+              check(rejected && fake.touch_events == 3, "denied touch reached native API"); }
             fake.deny_start = true; bool denied = false;
             try { PortalSession cancelled; } catch (const ProtocolError&) { denied = true; }
-            check(denied && fake.closes == 3 && !fake.failed, "cancelled consent leaked a session");
+            check(denied && fake.closes == 4 && !fake.failed, "cancelled consent leaked a session");
         }
         g_test_dbus_down(bus); g_object_unref(bus);
         std::cout << "PASS: private D-Bus portal, early response race, granted descriptors, input API, 180 KiB text, 1.2 MB HTML, alpha images, file URIs, permission denial/revocation and cleanup\n";

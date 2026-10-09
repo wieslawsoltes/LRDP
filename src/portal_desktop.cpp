@@ -11,6 +11,7 @@ namespace lrdp {
 namespace {
 class PortalDesktop final : public Desktop {
     PortalSession portal_;
+    TouchInjector touch_{[this](std::span<const TouchOperation> events) { portal_.touch_batch(events); }};
     PipeWireCapture capture_{portal_.open_pipewire(), portal_.stream()};
     std::shared_ptr<const Frame> frame_;
     Layout layout_;
@@ -51,6 +52,14 @@ public:
     Layout layout() const override { return layout_; }
     bool resizable() const override { return false; }
     bool unicode_input() const override { return true; }
+    ExtendedCapabilities extended_capabilities() const override { return {portal_.touch_available() ? 32U : 0U, 0}; }
+    void extended_input(const std::vector<ExtendedFrame>& frames) override {
+        const auto& stream = portal_.stream();
+        touch_.apply(frames, layout_.width, layout_.height,
+            stream.logical_width ? stream.logical_width : frame_->width,
+            stream.logical_height ? stream.logical_height : frame_->height);
+    }
+    void cancel_extended_input() override { touch_.cancel(); }
     bool clipboard_available() const override { return portal_.clipboard_available(); }
     bool embedded_cursor() const override { return portal_.stream().embedded_cursor; }
     bool resize(const Layout&) override { return false; }
@@ -112,6 +121,7 @@ public:
     void set_clipboard(std::string text) override { portal_.set_clipboard(std::move(text)); }
     std::optional<std::string> poll_clipboard() override { return portal_.take_clipboard(); }
     void release_input() override {
+        touch_.cancel();
         for (auto key : keys_) portal_.key(key, false);
         for (auto symbol : symbols_) portal_.keysym(symbol, false);
         for (auto button : buttons_) portal_.button(button, false);

@@ -16,7 +16,7 @@ void validate_client_info(View payload) {
 Session::Session(std::unique_ptr<Desktop> desktop, std::uint32_t requested, std::uint32_t selected, VideoFactory video, bool graphics)
     : desktop_(std::move(desktop)), requested_protocols_(requested), selected_protocol_(selected),
       video_factory_(std::move(video)), graphics_enabled_(graphics) { require(desktop_ != nullptr, "session requires a desktop"); }
-Session::~Session() { try { desktop_->release_input(); } catch (...) {} }
+Session::~Session() { try { release_all_input(); } catch (...) {} }
 void Session::send_global(View data) { outbound_.push_back(mcs_data(global_channel, data)); }
 void Session::send_channel(std::uint16_t id, View message) {
     for (const auto& fragment : channel_fragments(message)) outbound_.push_back(mcs_data(id, fragment));
@@ -35,7 +35,7 @@ void Session::activate() {
     synchronized_ = control_granted_ = false; phase_ = SessionPhase::confirm;
 }
 void Session::reactivate() {
-    desktop_->release_input(); Writer body; body.le32(share_id).le16(0); send_global(share_control(6, body.bytes())); activate();
+    suspend_extended(); release_all_input(); Writer body; body.le32(share_id).le16(0); send_global(share_control(6, body.bytes())); activate();
 }
 void Session::receive(View packet) {
     require(phase_ != SessionPhase::closed && !packet.empty(), "session closed or packet empty");
@@ -76,7 +76,7 @@ void Session::receive(View packet) {
         if (joined_.size() == settings_.channel_ids.size() + 2) phase_ = SessionPhase::info;
         return;
     }
-    if ((command & 0xfc) == 0x20) { desktop_->release_input(); phase_ = SessionPhase::closed; return; }
+    if ((command & 0xfc) == 0x20) { release_all_input(); phase_ = SessionPhase::closed; return; }
     require(command == 0x64, "unsupported MCS command");
     require(in.be16() == client_user - 1001, "wrong MCS SendData initiator");
     const auto channel = in.be16(); require(joined_.contains(channel), "data on unjoined channel");
