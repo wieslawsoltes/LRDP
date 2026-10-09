@@ -35,6 +35,10 @@ VolumeSpace volume_space(View data, std::uint32_t information_class) {
 }
 void native_statvfs(const VolumeSpace& space, bool writable, struct statvfs& result) {
     validate(space);
+    // The kernel FUSE reply has 32-bit bsize/frsize even when statvfs uses
+    // unsigned long. Reject rather than letting libfuse truncate the geometry.
+    if (space.unit_bytes > std::numeric_limits<std::uint32_t>::max())
+        throw IoError(EOVERFLOW, "allocation unit exceeds the FUSE wire representation");
     struct statvfs next{};
     next.f_bsize = native_number<decltype(next.f_bsize)>(space.unit_bytes);
     next.f_frsize = native_number<decltype(next.f_frsize)>(space.unit_bytes);
@@ -79,8 +83,8 @@ VolumeAttributes volume_attributes(View data) {
     Reader in(data); VolumeAttributes result;
     result.flags = in.le32(); result.max_component_utf16 = in.le32();
     const auto length = in.le32();
-    require(result.max_component_utf16 > 0 && result.max_component_utf16 <= 255,
-            "invalid filesystem component limit");
+    if (result.max_component_utf16 == 0 || result.max_component_utf16 > 255)
+        throw ProtocolError("invalid filesystem component limit: " + std::to_string(result.max_component_utf16));
     require((result.flags & 0x8010U) != 0x8010U, "incompatible filesystem compression flags");
     require(length > 0 && length <= 4096 && !(length & 1U), "invalid filesystem name length");
     result.filesystem = from_utf16le(in.take(length), false); in.end();

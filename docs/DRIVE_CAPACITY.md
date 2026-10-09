@@ -30,8 +30,11 @@ The portable record retains these fields exactly. The POSIX view conservatively
 clamps bfree to min(actual, total) and bavail to min(caller, actual, total), avoiding
 both inflated caller allowance and negative free-space displays. Native narrowing
 is checked; the caller's statvfs structure is untouched when conversion fails.
-Readonly combines LRDP's local mount policy with observed remote volume/device
-read-only flags. Remote ACLs may still reject writes when all three permit them.
+The C++ facade's readonly result combines LRDP's local mount policy with
+observed remote volume/device read-only flags. Linux FUSE ignores a statfs
+callback's f_flag: the operating-system statvfs flags reflect the mount policy,
+not a per-drive remount. Remote properties remain observable through the volume
+annotations below; remote ACLs still decide whether the client accepts a write.
 
 The synthetic mount root is a namespace, not a volume. It reports zero aggregate
 blocks rather than double-counting exports which can alias the same client
@@ -80,8 +83,10 @@ Unknown flags remain opaque; incompatible compression flags and invalid componen
 limits are rejected. Each variable-length text field is limited to 4096 wire
 bytes. Device type is restricted to the documented disk/CD-ROM values.
 
-Native statfs reports ST_RDONLY when the local policy, remote volume attributes,
-OR device characteristics require it. Missing optional metadata classes preserve
+The C++ Filesystem::statfs facade reports ST_RDONLY when the local policy, remote
+volume attributes, OR device characteristics require it. Linux FUSE does not
+carry that callback field to the kernel; use the raw volume/device annotations
+for per-drive properties. Missing optional metadata classes preserve
 local policy; only explicit unsupported statuses mean absence. Access denial and
 malformed successes remain errors and leave the caller's output unchanged.
 This reports observed properties, not an atomic remote snapshot or a substitute
@@ -118,3 +123,7 @@ New primary sources:
 - MS-FSCC 2.5.9: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/bf691378-c34e-4a13-976e-404ea1a87738
 - MS-FSCC 2.5.10: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/616b66d5-b335-4e1c-8f87-b4a55e8d3e4a
 - MS-FSCC 2.1.8: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/8ce7b38c-d3cc-415d-ab39-944000ea77ff
+
+Native API contract: libfuse fuse_operations::statfs explicitly ignores f_flag,
+f_fsid and f_favail:
+https://libfuse.github.io/doxygen/structfuse__operations.html

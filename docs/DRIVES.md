@@ -58,8 +58,10 @@ Wire code is original and specification-derived. The independent client is used 
 ### Capacity and descriptive volume metadata
 
 The redirected volume's `statvfs` now queries actual client allocation geometry
-and quota-aware availability, with explicit unsupported-class fallback. It also
-combines remote volume/device read-only flags with local mount policy. The
+and quota-aware availability, with explicit unsupported-class fallback. The C++ facade
+combines remote volume/device read-only flags with local mount policy. Linux FUSE
+ignores the callback f_flag, so OS-level flags still describe the mount rather
+than per-drive remounting; remote flags remain available in the annotations. The
 synthetic mount root does not sum potentially aliased client volumes.
 Read-only `user.lrdp.volume.*` xattrs expose labels, filesystem names, serials and
 capabilities; these are generated annotations, not arbitrary EA/ACL redirection.

@@ -68,6 +68,11 @@ void tests() {
     const auto before=native; auto invalid=quota;invalid.unit_bytes=0;
     rejects([&]{native_statvfs(invalid,false,native);});
     check(std::memcmp(&before,&native,sizeof(native))==0,"failed conversion leaves output untouched");
+    // libfuse serializes bsize/frsize as uint32 even on a 64-bit host.
+    // Valid 64-bit RDP geometry must not be silently narrowed on that boundary.
+    auto oversized_unit=volume_space(record(7,1,1,1,1U<<30,4),7);
+    ioerror([&]{native_statvfs(oversized_unit,false,native);},EOVERFLOW);
+    check(std::memcmp(&before,&native,sizeof(native))==0,"FUSE geometry overflow leaves output untouched");
     Peer peer;Filesystem fs(peer);
     const auto path="/"+device_name(peer.devices()[0]);
     check(fs.space("/").total_units==0 && peer.calls.empty(),"virtual root is not a duplicated sum of client volumes");
