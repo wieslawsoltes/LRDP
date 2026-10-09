@@ -36,7 +36,15 @@ void Protocol::receive(View message) {
     } else if(kind==0x434e) {
         require(phase_==Phase::name,"client name out of sequence"); const auto unicode=in.le32(); require(in.le32()==0,"unsupported client-name code page");
         const auto size=in.le32(); require(size && size<=4096,"client name exceeds policy"); auto text=in.take(size); in.end();
-        if(unicode&1) (void)from_utf16le(text); else { require(text.back()==0,"unterminated client name"); }
+        if(unicode&1) {
+            // MS-RDPEFS 2.2.2.4 defines a terminated, informational computer name.
+            // Some clients include extra zero code units in ComputerNameLen.
+            // Normalize only a zero suffix here, never paths or authenticated names.
+            require(text.size()%2==0,"odd client computer-name length");
+            while(text.size()>2 && text[text.size()-1]==0 && text[text.size()-2]==0 &&
+                  text[text.size()-3]==0 && text[text.size()-4]==0) text=text.first(text.size()-2);
+            (void)from_utf16le(text);
+        } else { require(text.back()==0,"unterminated client name"); }
         Writer caps; caps.le16(2).le16(0);
         caps.le16(1).le16(44).le32(2).le32(0).le32(0).le16(1).le16(minor_)
             .le32(0x3fff).le32(0).le32(7).le32(0).le32(0).le32(0);
