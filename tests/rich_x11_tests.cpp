@@ -7,6 +7,24 @@
 #include <map>
 #include <thread>
 using namespace lrdp;
+// Deterministic scheduling point: let the native owner react to the header's
+// PropertyDelete before LRDP resumes from XGetWindowProperty. The real X server
+// still performs every property operation and all byte transfers.
+static std::function<void()> after_increment_header;
+extern "C" int __real_XGetWindowProperty(Display*, Window, Atom, long, long, Bool, Atom,
+    Atom*, int*, unsigned long*, unsigned long*, unsigned char**);
+extern "C" int __wrap_XGetWindowProperty(Display* display, Window window, Atom property,
+    long offset, long length, Bool remove, Atom requested, Atom* type, int* format,
+    unsigned long* count, unsigned long* after, unsigned char** bytes) {
+    const int rc = __real_XGetWindowProperty(display,window,property,offset,length,remove,
+        requested,type,format,count,after,bytes);
+    if (rc == Success && remove && *after == 0 && *format == 32 && *count == 1 &&
+        *type == XInternAtom(display,"INCR",False) && after_increment_header) {
+        auto callback = std::move(after_increment_header); after_increment_header = {};
+        callback();
+    }
+    return rc;
+}
 namespace {
 void check(bool value,const char* message) { if(!value) throw std::runtime_error(message); }
 Bytes bytes(std::string_view text) { return {text.begin(),text.end()}; }
@@ -25,7 +43,7 @@ public:
     Application() {
         check(display!=nullptr,"X11 test display"); window=XCreateSimpleWindow(display,DefaultRootWindow(display),0,0,1,1,0,0,0);
         XSelectInput(display,window,PropertyChangeMask);
-        auto atom=[&](const char* s){ return XInternAtom(display,s,False); };
+        auto atom=[&](const char* s){return XInternAtom(display,s,False);};
         clipboard=atom("CLIPBOARD"); utf8=atom("UTF8_STRING"); html=atom("text/html"); bmp=atom("image/bmp"); png=atom("image/png");
         targets=atom("TARGETS"); incr=atom("INCR"); property=atom("_RICH_TEST"); XSync(display,False);
     }
@@ -107,8 +125,13 @@ int main(){
         ClipboardImage image{202,102,Bytes(202*102*4)};
         for(std::size_t i=0;i<image.bgra.size();++i) image.bgra[i]=std::uint8_t(i*19);
         const std::string html="<p>"+std::string(180000,'x')+"🚀世界</p>";
+        unsigned forced_interleavings = 0;
+        after_increment_header = [&] {
+            app.pump(); XSync(app.display,False); ++forced_interleavings;
+        };
         app.publish({{app.utf8,bytes("native plain 🚀")},{app.html,bytes(html)},{app.bmp,encode_clipboard_bmp(image)}});
         until([&]{ return remote.has_value(); });
+        check(forced_interleavings==1,"INCR scheduling regression was not exercised");
         check(remote->html==html && remote->text=="native plain 🚀" && remote->image==image,"native HTML/BMP multi-target import");
 #ifdef LRDP_TEST_PNG
         remote.reset(); app.publish({{app.png,encode_clipboard_png(image)},{app.html,bytes("<b>PNG</b>")}});
