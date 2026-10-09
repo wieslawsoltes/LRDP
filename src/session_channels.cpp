@@ -4,7 +4,7 @@ void Session::static_channel(std::uint16_t channel, View payload) {
     require(channels_started_, "virtual channel data before activation");
     if (receive_audio_static(channel, payload)) return;
     if ((!clipboard_channel_ || channel != *clipboard_channel_) && (!dynamic_channel_ || channel != *dynamic_channel_)) return;
-    auto [it, unused] = assemblers_.try_emplace(channel, 1024 * 1024); (void)unused;
+    auto [it, unused] = assemblers_.try_emplace(channel, clipboard_channel_ == channel ? clipboard_.message_limit() : 1024 * 1024); (void)unused;
     auto complete = it->second.accept(payload); if (!complete) return;
     if (clipboard_channel_ && channel == *clipboard_channel_) {
         apply_clipboard(clipboard_.accept(*complete));

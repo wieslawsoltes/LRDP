@@ -66,6 +66,7 @@ public:
                      std::uint32_t selected_protocol = 1, VideoFactory video = {}, bool graphics = true);
     ~Session();
     void configure_audio(std::unique_ptr<AudioDevices> devices);
+    void configure_rich_clipboard();
     void configure_file_clipboard(std::shared_ptr<ClipboardFileStore> store, FileClipboardLimits limits = {});
     const std::string& clipboard_status() const { return clipboard_status_; }
     void receive(View packet);
