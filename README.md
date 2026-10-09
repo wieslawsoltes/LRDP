@@ -38,11 +38,11 @@ The Ubuntu 24.04 CI configuration installs:
 ```sh
 sudo apt-get install \
   cmake ninja-build g++ pkg-config libssl-dev libkrb5-dev \
-  libx11-dev libxtst-dev libxfixes-dev libxrandr-dev \
-  libglib2.0-dev libpipewire-0.3-dev \
+  libx11-dev libxtst-dev libxfixes-dev libxrandr-dev libxau-dev \
+  libglib2.0-dev libpipewire-0.3-dev libpng-dev libfuse3-dev fuse3 \
   libavcodec-dev libavutil-dev libswscale-dev \
   python3 xvfb xserver-xorg-core xserver-xorg-video-dummy xterm \
-  freerdp2-x11 gss-ntlmssp dbus-daemon pipewire-bin
+  freerdp2-x11 gss-ntlmssp dbus-daemon pipewire-bin xauth x11-xserver-utils
 
 cmake -S . -B build -G Ninja \
   -DCMAKE_BUILD_TYPE=Debug -DLRDP_SANITIZE=ON -DLRDP_TEST_NTLM=ON
@@ -87,7 +87,7 @@ The default policy allows 128 file/directory descriptors and 256 MiB, uses four 
 
 ## Evidence and remaining scope
 
-[CI run 37927109397](https://github.com/wieslawsoltes/LRDP/actions/runs/37927109397), for revision `2d0daa1f8e44ce9ca6369fc10392b28c8b940aaa`, passed the sanitizer build, 43 of 44 registered suites, the Release build and the protocol-only configuration. The AVC420 independent-client test was explicitly skipped because the installed client lacks that codec; a skip is not a passing interoperability result. The lossless client test checks actual rendered pixels. AVC444/v2 are exercised through real TLS sessions and a separately linked native H.264 decoder; Windows AVC presentation and physical hardware are still unverified.
+The integrated implementation and exact-revision evidence are summarized in [IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md). The combined printer/persistence/network/volume/lossless revision passed [CI run 37991632005](https://github.com/wieslawsoltes/LRDP/actions/runs/37991632005) with 57 passing suites and one explicit AVC420-client skip. Deployment and native clipboard fixes have [separate exact-revision checks](https://github.com/wieslawsoltes/LRDP/actions/runs/37996714892). A skip is not a passing interoperability result, and a successful earlier revision does not certify later changes.
 
 The native file-clipboard fixture uses real TLS, private Xorg and an independent Xlib application for byte-exact export/import, out-of-order chunks, clipboard paste, cursor hotspots, suppression, traversal rejection and cleanup. Further tests cover portal API/descriptor lifetimes, audio through private PipeWire devices, NLA, headless resizing, rich clipboard, RDPEI and redirected drives.
 
