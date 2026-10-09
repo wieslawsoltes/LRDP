@@ -1,0 +1,6 @@
+target_sources(lrdp_protocol PRIVATE src/avc444.cpp)
+if(BUILD_TESTING)
+  add_executable(lrdp_avc444_tests tests/avc444_tests.cpp)
+  target_link_libraries(lrdp_avc444_tests PRIVATE lrdp_protocol)
+  add_test(NAME avc444 COMMAND lrdp_avc444_tests)
+endif()
