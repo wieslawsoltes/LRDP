@@ -83,6 +83,28 @@ struct DriveMount::Impl {
                 drive::native_stat(info,s.filesystem.writable(),*result); return 0;
             });
         };
+        op.statfs = [](const char* path, struct statvfs* result) {
+            return protect([&](Impl& s) {
+                s.filesystem.statfs(path, *result);
+                return 0;
+            });
+        };
+        op.getxattr = [](const char* path, const char* name, char* value, std::size_t size) {
+            return protect([&](Impl& s) {
+                const auto bytes = s.filesystem.getxattr(path, name);
+                return drive::native_xattr(bytes, value, size);
+            });
+        };
+        op.listxattr = [](const char* path, char* names, std::size_t size) {
+            return protect([&](Impl& s) {
+                const auto bytes = s.filesystem.listxattr(path);
+                return drive::native_xattr(bytes, names, size);
+            });
+        };
+        // These are read-only annotations. Do not turn a client's descriptive
+        // flags into arbitrary EA/ACL mutation or permission grants.
+        op.setxattr = [](const char*, const char*, const char*, std::size_t, int) { return -EOPNOTSUPP; };
+        op.removexattr = [](const char*, const char*) { return -EOPNOTSUPP; };
         op.open = [](const char* path, fuse_file_info* info) { return protect([&](Impl& s) { return s.open(path,info); }); };
         op.create = [](const char* path, mode_t, fuse_file_info* info) { return protect([&](Impl& s) { return s.open(path,info,O_CREAT); }); };
         op.release = [](const char*, fuse_file_info* info) {

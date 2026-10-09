@@ -1,5 +1,6 @@
 #pragma once
 #include "client.hpp"
+#include "volume.hpp"
 #include <sys/stat.h>
 
 namespace lrdp::drive {
@@ -15,11 +16,19 @@ class Filesystem final {
     Reply execute(Request request);
     Handle open_relative(const Path& path, std::uint32_t access, std::uint32_t disposition, std::uint32_t options);
     FileInfo information(const Handle& handle);
+    VolumeSpace space(const Handle& handle);
+    std::optional<Bytes> optional_volume(const Handle& handle, std::uint32_t information_class);
     void mutable_path(const Path& path) const;
 public:
     explicit Filesystem(Client& client) : client_(client) {}
     bool writable() const { return client_.limits().writable; }
     FileInfo stat(std::string_view path);
+    VolumeSpace space(std::string_view path);
+    VolumeDetails volume_details(std::string_view path);
+    void statfs(std::string_view path, struct statvfs& result);
+    // Read-only LRDP volume annotations, not arbitrary remote EAs or ACLs.
+    Bytes getxattr(std::string_view path, std::string_view name);
+    Bytes listxattr(std::string_view path);
     FileInfo stat(const Handle& handle) { return information(handle); }
     std::vector<Entry> list(std::string_view path);
     Handle open(std::string_view path, int flags);
