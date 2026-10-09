@@ -43,7 +43,7 @@ struct Configuration {
     VideoOptions video;
     AudioOptions audio;
     std::string clipboard_root, drive_root, broker_socket;
-    bool drives_writable = false;
+    bool drives_writable = false, network_metrics = false;
     bool clipboard_rich = false;
     FileClipboardLimits clipboard_limits;
 #ifdef LRDP_HAVE_HEADLESS
@@ -59,6 +59,7 @@ void usage() {
               << "  [--backend demo|x11|portal|headless] [--display :0] [--fps 30] [--once]\n"
               << "  [--gfx auto|off] [--encoder auto|software|vaapi|nvenc|raw|lossless] [--device /dev/dri/renderD128]\n"
               << "  [--desktop-command /absolute/executable] [--desktop-arg ARG] [--xorg-executable /absolute/Xorg]\n"
+              << "  [--network-metrics]  Opt-in continuous RTT and passive receive-throughput diagnostics.\n"
               << "  [--session-broker /private/directory/broker.sock] (headless only; applications survive disconnect)\n"
               << "  [--audio] [--microphone]  Publish per-session virtual PipeWire devices.\n"
               << "  [--clipboard-rich] (HTML and images; x11/headless/portal)\n"
@@ -94,6 +95,7 @@ Configuration parse(int argc, char** argv) {
         else if (option == "--clipboard-rich") c.clipboard_rich = true;
         else if (option == "--clipboard-files") c.clipboard_root = value();
         else if (option == "--clipboard-max-mib") c.clipboard_limits.bytes = std::uint64_t(number(value(), 1024))*1024*1024;
+        else if (option == "--network-metrics") c.network_metrics = true;
         else if (option == "--audio") c.audio.playback = true;
         else if (option == "--microphone") c.audio.microphone = true;
         else if (option == "--lab-no-auth") c.laboratory = true; else if (option == "--once") c.once = true;
@@ -190,6 +192,12 @@ int serve(int fd, TlsContext& context, const Configuration& c, const VideoFactor
             std::cout << "Drives mounted: " << drive_mount->path() << (c.drives_writable ? " (writable)" : " (readonly)") << '\n' << std::flush;
         }
 #endif
+        if (c.network_metrics) {
+            session.configure_network_metrics();
+            stream.observe_transmissions([&session](View packet, std::uint64_t bytes, Clock::time_point now) {
+                session.network_transmitted(packet, bytes, now);
+            });
+        }
         if (c.clipboard_rich) session.configure_rich_clipboard();
         if (!c.clipboard_root.empty()) session.configure_file_clipboard(make_clipboard_file_store(c.clipboard_root, c.clipboard_limits), c.clipboard_limits);
 #ifdef LRDP_HAVE_AUDIO
@@ -201,12 +209,23 @@ int serve(int fd, TlsContext& context, const Configuration& c, const VideoFactor
 #endif
         const auto start = Clock::now(); auto next_frame = start, last_receive = start, last_progress = start;
         std::uint64_t previous_written = 0; bool announced = false; std::string graphics_status, clipboard_status;
-        auto drain = [&] { stream.enqueue(session.drain()); stream.enqueue_media(session.drain_media()); };
+        auto next_network_log = start;
+        auto drain = [&] {
+            auto packets = session.drain(); auto media = session.drain_media();
+            const bool data_pending = !packets.empty() || !media.empty();
+            auto probes = session.poll_network(Clock::now(), stream.queued() == 0, data_pending);
+            stream.enqueue(std::move(probes.before_data));
+            stream.enqueue(std::move(packets)); stream.enqueue_media(std::move(media));
+            stream.enqueue(std::move(probes.after_data));
+        };
         while (running && session.phase() != SessionPhase::closed) {
             stream.pump(10);
             while (auto packet = stream.packet()) {
                 struct Wipe { Bytes& bytes; ~Wipe() { OPENSSL_cleanse(bytes.data(), bytes.size()); } } wipe{*packet};
-                session.receive(*packet); last_receive = Clock::now(); drain();
+                session.receive(*packet);
+                // Diagnostic replies must not silently defeat the existing idle policy.
+                if (!session.last_packet_was_network()) last_receive = Clock::now();
+                drain();
             }
             const auto now = Clock::now();
             if (!announced && session.active()) { std::cout << "Session active\n" << std::flush; announced = true; }
@@ -217,6 +236,22 @@ int serve(int fd, TlsContext& context, const Configuration& c, const VideoFactor
             const bool due = now >= next_frame;
             session.tick(stream.normal_queued() == 0, due); drain();
             if (due) next_frame = now + std::chrono::microseconds(1000000 / c.fps);
+            if (const auto* detector = session.network_metrics(); detector && now >= next_network_log) {
+                const auto& m = detector->metrics();
+                auto number_or_unknown = [](const auto& value) { return value ? std::to_string(*value) : std::string("unknown"); };
+                std::cout << "Network: rtt_us=" << number_or_unknown(m.rtt_us)
+                          << " smoothed_rtt_us=" << number_or_unknown(m.smoothed_rtt_us)
+                          << " minimum_rtt_us=" << number_or_unknown(m.minimum_rtt_us)
+                          << " jitter_us=" << number_or_unknown(m.jitter_us)
+                          << " rtt_age_ms=" << number_or_unknown(detector->rtt_age_ms(now))
+                          << " peer_receive_kbps=" << number_or_unknown(m.peer_kbps)
+                          << " bandwidth_age_ms=" << number_or_unknown(detector->bandwidth_age_ms(now))
+                          << " rtt_samples=" << m.rtt_samples << " bandwidth_samples=" << m.bandwidth_samples
+                          << " ignored=" << m.ignored_responses << " invalid=" << m.invalid_measurements << " timeouts=" << m.timeouts
+                          << " rtt_disabled=" << m.rtt_disabled << " bandwidth_disabled=" << m.bandwidth_disabled
+                          << " sequence_exhausted=" << m.sequence_exhausted << '\n' << std::flush;
+                next_network_log = now + std::chrono::seconds(5);
+            }
             if (clipboard_status != session.clipboard_status()) {
                 clipboard_status = session.clipboard_status(); std::cout << "Clipboard: " << clipboard_status << '\n' << std::flush;
             }
