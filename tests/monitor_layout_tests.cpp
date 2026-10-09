@@ -25,7 +25,7 @@ int main() {
         const auto demand = demand_active(640,480,24,true); Reader active(demand);
         active.skip(10); const auto descriptor = active.le16(), combined = active.le16(); active.skip(descriptor);
         Reader caps(active.take(combined)); const auto count = caps.le16(); caps.skip(2);
-        require(count == 8,"server capability count");
+        require(count == 10,"server capability count");
         for (unsigned i = 0; i < count; ++i) {
             const auto kind = caps.le16(), size = caps.le16(); Reader cap(caps.take(size-4));
             if (kind == 1) { require(size == 24,"general capability length"); cap.skip(18); require(cap.u8() == 1 && cap.u8() == 1,"refresh/suppress capability offsets"); cap.end(); }

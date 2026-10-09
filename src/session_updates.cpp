@@ -17,16 +17,24 @@ void Session::share_packet(View payload) {
         Reader capabilities(in.take(combined)); in.end();
         const auto count = capabilities.le16(); capabilities.skip(2); require(count <= 64, "too many capabilities");
         std::set<unsigned> types; bool bitmap_seen = false;
-        pointer_.configure(0, 0);
+        unsigned color_slots = 0, alpha_slots = 0, large_flags = 0;
+        std::uint32_t max_request = 0;
+        bool fastpath = false;
         for (unsigned i = 0; i < count; ++i) {
             const auto kind = capabilities.le16(), size = capabilities.le16();
             require(size >= 4 && types.insert(kind).second, "invalid or duplicate capability");
             Reader cap(capabilities.take(size - 4));
-            if (kind == 8) {
+            if (kind == 1) {
+                require(size == 24, "invalid general capability length");
+                cap.skip(10); fastpath = (cap.le16() & 1) != 0;
+            } else if (kind == 26) {
+                require(size == 8, "invalid multifragment capability length"); max_request = cap.le32();
+            } else if (kind == 27) {
+                require(size == 6, "invalid large pointer capability length"); large_flags = cap.le16();
+            } else if (kind == 8) {
                 require(size == 8 || size == 10, "invalid pointer capability length");
-                (void)cap.le16(); const auto color_slots = cap.le16();
-                const auto alpha_slots = cap.empty() ? 0U : cap.le16();
-                pointer_.configure(color_slots, alpha_slots);
+                (void)cap.le16(); color_slots = cap.le16();
+                alpha_slots = cap.empty() ? 0U : cap.le16();
             } else if (kind == 2) {
                 require(size == 28, "invalid bitmap capability length"); bitmap_seen = true;
                 const auto depth = cap.le16(); require(depth == 15 || depth == 16 || depth == 24 || depth == 32, "unsupported bitmap depth");
@@ -34,6 +42,7 @@ void Session::share_packet(View payload) {
             }
         }
         capabilities.end(); require(bitmap_seen, "client bitmap capability required");
+        pointer_.configure(color_slots, alpha_slots, large_flags, max_request, fastpath);
         Writer sync; sync.le16(1).le16(client_user); send_global(share_data(31, sync.bytes())); send_global(control(4));
         phase_ = SessionPhase::finalize; return;
     }
