@@ -11,10 +11,17 @@ struct EncodedVideo;
 Bytes graphics_pdu(std::uint16_t command, View payload);
 Bytes graphics_segments(View payload);
 
+struct GraphicsQoe {
+    std::uint32_t frame_id = 0, timestamp = 0;
+    std::uint16_t decode_ms = 0, render_ms = 0;
+};
+
 class Graphics {
     using Clock = std::chrono::steady_clock;
     bool negotiated_ = false, video_enabled_ = false, surface_ = false;
     VideoCodec codec_ = VideoCodec::avc420;
+    std::uint32_t capability_version_ = 0;
+    std::optional<GraphicsQoe> qoe_;
     bool acknowledgements_ = true;
     std::uint32_t frame_id_ = 0, queue_depth_ = 0;
     std::uint16_t width_ = 0, height_ = 0;
@@ -32,6 +39,8 @@ public:
     void raw_frame(const Frame& frame);
     void video_frame(View annex_b, unsigned width, unsigned height, unsigned qp = 22);
     void video_frame(const EncodedVideo& frame);
+    [[nodiscard]] const std::optional<GraphicsQoe>& latest_qoe() const { return qoe_; }
+    [[nodiscard]] std::uint32_t capability_version() const { return capability_version_; }
     [[nodiscard]] bool ready() const { return negotiated_ && surface_; }
     [[nodiscard]] bool avc420() const { return video_enabled_ && codec_ == VideoCodec::avc420; }
     [[nodiscard]] bool video_enabled() const { return video_enabled_; }

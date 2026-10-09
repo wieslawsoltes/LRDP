@@ -75,6 +75,7 @@ bool Graphics::receive(View message, bool video_available) {
             Writer confirm; confirm.le32(selected.version).le32(selected.length);
             if (selected.length == 16) confirm.zeros(16); else confirm.le32(selected.flags);
             emit(0x13, confirm.bytes());
+            capability_version_ = selected.version;
             codec_ = selected.codec; video_enabled_ = selected.video; negotiated_ = true;
         } else if (command == 0x0d) {
             require(negotiated_, "graphics acknowledgement before capabilities");
@@ -83,6 +84,19 @@ bool Graphics::receive(View message, bool video_available) {
             queue_depth_ = depth; acknowledgements_ = depth != 0xffffffffU;
             if (!acknowledgements_) pending_.clear();
             else while (!pending_.empty() && pending_.front().first <= id) pending_.pop_front();
+        } else if (command == 0x16) {
+            // MS-RDPEGFX 2.2.2.21 / 3.2.5.21: QoE is informational only.
+            // It MUST NOT release flow-control credit or extend ACK deadlines.
+            require(negotiated_ && (capability_version_ == 0x000a0002 || capability_version_ == 0x000a0200),
+                    "QoE acknowledgement was not negotiated");
+            GraphicsQoe sample;
+            sample.frame_id = in.le32(); sample.timestamp = in.le32();
+            sample.decode_ms = in.le16(); sample.render_ms = in.le16(); in.end();
+            require(sample.frame_id > 0 && sample.frame_id <= frame_id_, "QoE refers to an unsent frame");
+            // Frame IDs do not wrap within a connection. Keeping just the latest
+            // annotated frame tolerates late reports and wrapping client clocks;
+            // timestamps are never compared against the server's monotonic clock.
+            if (!qoe_ || sample.frame_id >= qoe_->frame_id) qoe_ = sample;
         } else if (command == 0x10) {
             require(negotiated_, "graphics cache offer before capabilities");
             const auto count = in.le16();

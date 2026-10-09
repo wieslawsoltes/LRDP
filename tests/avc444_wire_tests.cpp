@@ -62,6 +62,36 @@ void framing(VideoCodec mode) {
     }
     in.end();
 }
+void quality_of_experience() {
+    auto sample = [](unsigned id, unsigned time, unsigned decode = 0, unsigned render = 0) {
+        Writer body; body.le32(id).le32(time).le16(decode).le16(render);
+        return graphics_pdu(0x16, body.bytes());
+    };
+    Graphics before; rejects([&] { before.receive(sample(1,0), true); });
+    for (const auto version : {0xa0002U, 0xa0200U}) {
+        Graphics g; check(g.receive(offer({{version,0}}), true), "QoE negotiation");
+        Monitor m; m.width=640; m.height=480; g.reset(validate_layout({m})); (void)g.drain();
+        Frame frame{640,480,Bytes(640*480*4)};
+        g.raw_frame(frame); g.raw_frame(frame); (void)g.drain();
+        check(!g.can_send() && g.in_flight()==2, "QoE credit precondition");
+        g.receive(sample(1,0xfffffff0,17,5), true);
+        check(g.latest_qoe()->frame_id==1 && g.latest_qoe()->decode_ms==17 && g.latest_qoe()->render_ms==5, "QoE fields");
+        g.receive(sample(2,20,0,0), true); // Clock roll-over, not a backwards frame.
+        g.receive(sample(1,30,1,1), true); // Delayed older sample cannot replace the latest.
+        check(g.latest_qoe()->frame_id==2 && g.latest_qoe()->timestamp==20, "QoE wrapping clock/order");
+        check(g.in_flight()==2 && !g.can_send() && g.drain().empty(), "QoE incorrectly released frame credit");
+        rejects([&] { g.receive(sample(3,0), true); });
+        const auto valid=sample(2,40);
+        for(std::size_t n=0;n<valid.size();++n) rejects([&]{g.receive(View(valid).first(n),true);});
+        Writer surplus; surplus.le32(2).le32(40).le16(1).le16(1).u8(0);
+        rejects([&]{g.receive(graphics_pdu(0x16,surplus.bytes()),true);});
+        check(g.latest_qoe()->timestamp==20, "malformed QoE changed metrics");
+    }
+    for(const auto version:{0x80105U,0xa0100U}) {
+        Graphics g; g.receive(offer({{version,16}}),true);
+        rejects([&]{g.receive(sample(1,0),true);});
+    }
+}
 class Encoder final:public VideoEncoder {
     VideoCodec codec_;
 public:
@@ -77,4 +107,4 @@ void worker() {
     worker.submit(f,2,true);auto second=await();check(second.frame&&second.frame->key_frame&&creates==2,"generation refresh must discard old codec references");
 }
 }
-int main(){try{negotiation();framing(VideoCodec::avc444);framing(VideoCodec::avc444v2);worker();std::cout<<"PASS: AVC444/v2 capability intersection, LC/region framing, atomic rejection, subframe ordering and worker reference reset\n";}catch(const std::exception& e){std::cerr<<"FAIL: "<<e.what()<<'\n';return 1;}}
+int main(){try{negotiation();framing(VideoCodec::avc444);framing(VideoCodec::avc444v2);quality_of_experience();worker();std::cout<<"PASS: AVC444/v2 capability intersection, LC/region framing, atomic rejection, subframe ordering and worker reference reset\n";}catch(const std::exception& e){std::cerr<<"FAIL: "<<e.what()<<'\n';return 1;}}
