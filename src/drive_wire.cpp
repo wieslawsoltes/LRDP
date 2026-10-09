@@ -37,6 +37,16 @@ Bytes rename_information(std::string_view path, bool replace) {
 }
 Bytes request_body(const Request& r, std::uint32_t limit) {
     Writer out;
+    if(r.purpose==Purpose::printer) {
+        require(r.path.empty() && r.offset==0,"printer requests must not contain filesystem paths or offsets");
+        if(r.operation==Operation::open || r.operation==Operation::close) {
+            require(r.data.empty(),"printer open/close contains data"); out.zeros(32);
+        } else {
+            require(r.operation==Operation::write && r.length>0 && r.length<=limit && r.data.size()==r.length,"invalid printer write");
+            out.le32(r.length).zeros(28).raw(r.data);
+        }
+        return std::move(out).finish();
+    }
     switch (r.operation) {
     case Operation::open: {
         require(r.disposition <= 5 && (r.options & ~0x00200061U) == 0 && (r.options & 0x41) != 0x41, "unsupported redirected create options");

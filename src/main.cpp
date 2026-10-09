@@ -1,5 +1,8 @@
 #include "lrdp/session.hpp"
 #include "lrdp/transport.hpp"
+#ifdef LRDP_HAVE_PRINTING
+#include "lrdp/printing/native.hpp"
+#endif
 #include "lrdp/platform/clipboard_file_store.hpp"
 #ifdef LRDP_HAVE_FUSE
 #include "lrdp/platform/drive_mount.hpp"
@@ -42,7 +45,7 @@ struct Configuration {
     bool laboratory = false, nla = false, allow_ntlm = false, once = false, graphics = true;
     VideoOptions video;
     AudioOptions audio;
-    std::string clipboard_root, drive_root, broker_socket;
+    std::string clipboard_root, drive_root, broker_socket, printer_root;
     bool drives_writable = false, network_metrics = false;
     bool clipboard_rich = false;
     FileClipboardLimits clipboard_limits;
@@ -55,6 +58,7 @@ void usage() {
               << "  --cert FILE --key FILE\n"
               << "  --auth nla --service TERMSRV@host.example.org --allow-principal user@REALM\n"
               << "  [--allow-ntlm] [--listen 127.0.0.1] [--port 3389] [--max-sessions 4]\n"
+              << "  [--printers-directory /private/0700/directory]  Native raw printer submission.\n"
               << "  [--drives-directory /private/0700/directory] [--drives-writable]\n"
               << "  [--backend demo|x11|portal|headless] [--display :0] [--fps 30] [--once]\n"
               << "  [--gfx auto|off] [--encoder auto|software|vaapi|nvenc|raw|lossless] [--device /dev/dri/renderD128]\n"
@@ -90,6 +94,7 @@ Configuration parse(int argc, char** argv) {
         else if (option == "--service") c.service = value();
         else if (option == "--allow-principal") { const auto name = value(); require(!name.empty() && name.size() <= 1024, "invalid principal policy"); c.principals.insert(name); }
         else if (option == "--allow-ntlm") c.allow_ntlm = true;
+        else if (option == "--printers-directory") c.printer_root = value();
         else if (option == "--drives-directory") c.drive_root = value();
         else if (option == "--drives-writable") c.drives_writable = true;
         else if (option == "--clipboard-rich") c.clipboard_rich = true;
@@ -133,6 +138,9 @@ Configuration parse(int argc, char** argv) {
     require(!c.drives_writable || !c.drive_root.empty(), "--drives-writable requires --drives-directory");
 #ifndef LRDP_HAVE_FUSE
     require(c.drive_root.empty(), "this build has no libfuse3 drive mounting support");
+#endif
+#ifndef LRDP_HAVE_PRINTING
+    require(c.printer_root.empty(), "this build has no native printer submission support");
 #endif
     require(c.video.backend != "lossless" || c.graphics, "lossless graphics requires --gfx auto");
     c.video.fps = c.fps; return c;
@@ -190,6 +198,13 @@ int serve(int fd, TlsContext& context, const Configuration& c, const VideoFactor
             session.configure_drives(bridge);
             drive_mount = std::make_unique<DriveMount>(bridge, c.drive_root);
             std::cout << "Drives mounted: " << drive_mount->path() << (c.drives_writable ? " (writable)" : " (readonly)") << '\n' << std::flush;
+        }
+#endif
+#ifdef LRDP_HAVE_PRINTING
+        if (!c.printer_root.empty()) {
+            auto endpoint = std::make_unique<printing::NativeEndpoint>(c.printer_root);
+            std::cout << "Printers endpoint: " << endpoint->path() << '\n' << std::flush;
+            session.configure_printers(std::move(endpoint));
         }
 #endif
         if (c.network_metrics) {

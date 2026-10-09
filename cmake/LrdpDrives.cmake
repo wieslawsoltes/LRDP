@@ -1,4 +1,4 @@
-target_sources(lrdp_protocol PRIVATE src/drive_wire.cpp src/drive_protocol.cpp src/drive_bridge.cpp src/drive_filesystem.cpp src/session_drives.cpp)
+target_sources(lrdp_protocol PRIVATE src/drive_wire.cpp src/drive_protocol.cpp src/printer_wire.cpp src/printer_jobs.cpp src/drive_bridge.cpp src/drive_filesystem.cpp src/session_drives.cpp)
 if(BUILD_TESTING)
   add_executable(lrdp_drive_protocol_tests tests/drive_protocol_tests.cpp)
   target_link_libraries(lrdp_drive_protocol_tests PRIVATE lrdp_protocol)
@@ -37,6 +37,12 @@ if(BUILD_TESTING)
   add_executable(lrdp_drive_name_tests tests/drive_name_tests.cpp)
   target_link_libraries(lrdp_drive_name_tests PRIVATE lrdp_protocol)
   add_test(NAME drive_names COMMAND lrdp_drive_name_tests)
+endif()
+
+if(BUILD_TESTING)
+  add_executable(lrdp_printer_tests tests/printer_tests.cpp)
+  target_link_libraries(lrdp_printer_tests PRIVATE lrdp_protocol)
+  add_test(NAME printer_protocol COMMAND lrdp_printer_tests)
 endif()
 
 target_sources(lrdp_protocol PRIVATE src/drive_volume.cpp src/drive_volume_filesystem.cpp)

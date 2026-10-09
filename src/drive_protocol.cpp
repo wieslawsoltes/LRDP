@@ -46,10 +46,12 @@ void Protocol::receive(View message) {
                   text[text.size()-3]==0 && text[text.size()-4]==0) text=text.first(text.size()-2);
             (void)from_utf16le(text);
         } else { require(text.back()==0,"unterminated client name"); }
-        Writer caps; caps.le16(2).le16(0);
+        Writer caps; caps.le16(1U + unsigned(limits_.files) + unsigned(limits_.printers)).le16(0);
         caps.le16(1).le16(44).le32(2).le32(0).le32(0).le16(1).le16(minor_)
             .le32(0x3fff).le32(0).le32(7).le32(0).le32(0).le32(0);
-        caps.le16(4).le16(8).le32(2); emit(0x5350,caps.bytes());
+        if(limits_.files) caps.le16(4).le16(8).le32(2);
+        if(limits_.printers) caps.le16(2).le16(8).le32(1);
+        emit(0x5350,caps.bytes());
         Writer confirmed; confirmed.le16(1).le16(minor_).le32(client_id_); emit(0x4343,confirmed.bytes()); phase_=Phase::capabilities;
     } else if(kind==0x4350) capabilities(in);
     else {
@@ -63,7 +65,7 @@ void Protocol::receive(View message) {
 void Protocol::capabilities(Reader& in) {
     require(phase_==Phase::capabilities,"duplicate or premature drive capabilities");
     const auto count=in.le16(); in.skip(2); require(count<=64,"too many drive capabilities");
-    std::set<unsigned> seen; bool general=false,drives=false; std::uint32_t extended=0;
+    std::set<unsigned> seen; bool general=false,drives=false,printers=false; std::uint32_t extended=0;
     for(unsigned i=0;i<count;++i) {
         const auto type=in.le16(),length=in.le16(); const auto version=in.le32();
         require(length>=8 && seen.insert(type).second,"invalid or duplicate drive capability"); Reader cap(in.take(length-8));
@@ -71,20 +73,24 @@ void Protocol::capabilities(Reader& in) {
             require((version==1 && length==40)||(version==2 && length==44),"invalid general drive capability");
             cap.skip(8); require(cap.le16()==1,"unsupported general drive version"); (void)cap.le16(); cap.skip(8);
             extended=cap.le32(); cap.skip(8); if(version==2) cap.skip(4); cap.end(); general=true;
+        } else if(type==2) {
+            require(length==8 && version==1,"invalid printer capability"); printers=true;
         } else if(type==4) {
             require(length==8 && (version==1||version==2),"invalid drive capability"); drives=true;
         }
     }
-    in.end(); require(general,"missing general device capability"); extended_=extended; client_drives_=drives; phase_=Phase::active;
+    in.end(); require(general,"missing general device capability"); extended_=extended; client_drives_=drives && limits_.files; client_printers_=printers && limits_.printers; phase_=Phase::active;
     if(extended_ & 4) emit(0x554c);
 }
 void Protocol::announce_devices(Reader& in) {
     const auto count=in.le32(); require(count<=64,"device announcement count exceeds policy");
     std::vector<std::pair<std::uint32_t,std::uint32_t>> replies;
     std::vector<Device> accepted; std::set<std::uint32_t> batch;
+    unsigned printer_count=0,defaults=0;
+    for(const auto& [id,d]:devices_) { (void)id; if(d.printer){++printer_count; defaults+=unsigned((d.printer->flags&2)!=0);} }
     for(unsigned i=0;i<count;++i) {
         const auto type=in.le32(),id=in.le32(); const auto name=in.take(8); const auto bytes=in.le32();
-        require(bytes<=65536,"device data exceeds policy"); in.skip(bytes);
+        require(bytes<=65536,"device data exceeds policy"); const auto data=in.take(bytes);
         require(batch.insert(id).second && !devices_.contains(id),"duplicate live device ID");
         const auto zero=std::find(name.begin(),name.end(),0);
         bool valid=zero!=name.end() && zero!=name.begin();
@@ -94,9 +100,15 @@ void Protocol::announce_devices(Reader& in) {
             valid &= c>=32 && c<127 && std::string_view("<>\"/\\|").find(char(c))==std::string_view::npos && (c!=':'||n+1==label.size());
         }
         std::uint32_t status=success;
-        if(type!=8 || !client_drives_) status=unsupported;
+        if(type==4 && client_printers_) {
+            auto printer=printer_information(data);
+            valid &= label.size()>3 && label.starts_with("PRN") &&
+                std::all_of(label.begin()+3,label.end(),[](unsigned char c){return c>='0' && c<='9';});
+            if(!valid || devices_.size()+accepted.size()>=limits_.devices || printer_count>=16 || ((printer.flags&2) && defaults)) status=denied;
+            else { ++printer_count; defaults+=unsigned((printer.flags&2)!=0); accepted.push_back({{id,0},std::move(label),std::move(printer)}); }
+        } else if(type!=8 || !client_drives_) status=unsupported;
         else if(!valid || devices_.size()+accepted.size()>=limits_.devices) status=denied;
-        else accepted.push_back({{id,0},std::move(label)});
+        else accepted.push_back({{id,0},std::move(label),{}});
         replies.emplace_back(id,status);
     }
     in.end();
@@ -115,7 +127,7 @@ void Protocol::remove_devices(Reader& in) {
         const auto key=device->second.key; devices_.erase(device);
         std::erase_if(handles_,[&](const auto& item){return item.second.device==key;});
         for(auto& [completion,p]:pending_) if(!p.abandoned && p.request.device==key) {
-            (void)completion; replies_.push_back({p.request.ticket,removed,0,0,{}}); p.abandoned=true;
+            (void)completion; replies_.push_back({p.request.ticket,removed,0,0,{},p.request.purpose}); p.abandoned=true;
             // Keep the completion ID reserved until its old reply arrives. Reused
             // device IDs must never authorize an old handle or late completion.
         }
@@ -123,11 +135,15 @@ void Protocol::remove_devices(Reader& in) {
 }
 bool Protocol::submit(const Request& request,Clock::time_point now) {
     require(ready(),"drive operation before initialization");
-    require(request.ticket && !tickets_.contains(request.ticket),"duplicate drive request ticket");
+    require(request.purpose==Purpose::filesystem || request.purpose==Purpose::printer,"invalid device request purpose");
+    require(request.ticket && !tickets_.contains({request.purpose,request.ticket}),"duplicate drive request ticket");
     require(replies_.size()<limits_.outstanding,"drive results must be drained");
-    auto immediate=[&](std::uint32_t status){ replies_.push_back({request.ticket,status,0,0,{}});return true; };
+    auto immediate=[&](std::uint32_t status){ replies_.push_back({request.ticket,status,0,0,{},request.purpose});return true; };
     const auto device=devices_.find(request.device.id);
     if(device==devices_.end() || device->second.key!=request.device)return immediate(removed);
+    const bool printer=request.purpose==Purpose::printer;
+    if(printer!=device->second.printer.has_value()) return immediate(denied);
+    if(printer && request.operation!=Operation::open && request.operation!=Operation::write && request.operation!=Operation::close) return immediate(unsupported);
     std::uint32_t remote=0;
     const RemoteHandle* handle=nullptr;
     if(request.operation!=Operation::open) {
@@ -141,21 +157,21 @@ bool Protocol::submit(const Request& request,Clock::time_point now) {
     } else if(handles_.size()+pending_.size()>=limits_.handles)return false;
     const bool changes=request.operation==Operation::write || request.operation==Operation::set_information ||
         (request.operation==Operation::open && (request.disposition!=1 || (request.access & mutation_access)));
-    if(changes && !limits_.writable)return immediate(denied);
-    if(request.operation==Operation::write && !(handle->access & (0x50000006U)))return immediate(denied);
+    if(!printer && changes && !limits_.writable)return immediate(denied);
+    if(!printer && request.operation==Operation::write && !(handle->access & (0x50000006U)))return immediate(denied);
     if(request.operation==Operation::set_information && !(handle->access & mutation_access))return immediate(denied);
     if(request.operation==Operation::query_directory && !handle->directory)return immediate(0xc0000103);
     if(free_ids_.empty())return false;
     const auto body=request_body(request,limits_.transfer); const auto id=free_ids_.front();
     Writer w;w.le32(request.device.id).le32(remote).le32(id).le32(major(request.operation))
         .le32(request.operation==Operation::query_directory ? 1 : 0).raw(body);
-    emit(0x4952,w.bytes()); pending_.emplace(id,Pending{request,now+limits_.timeout});tickets_.insert(request.ticket);free_ids_.pop_front();return true;
+    emit(0x4952,w.bytes()); pending_.emplace(id,Pending{request,now+limits_.timeout});tickets_.insert({request.purpose,request.ticket});free_ids_.pop_front();return true;
 }
 void Protocol::complete(Reader& in) {
     const auto device=in.le32(),id=in.le32(),status=in.le32(); auto found=pending_.find(id);
     require(found!=pending_.end() && found->second.request.device.id==device,"uncorrelated drive I/O completion");
     auto& pending=found->second;const auto& request=pending.request;
-    Reply reply{request.ticket,status,0,0,{}};
+    Reply reply{request.ticket,status,0,0,{},request.purpose};
     if(status!=success) {
         require(in.remaining()<=16,"error completion has unexpected payload"); in.skip(in.remaining());
     } else if(request.operation==Operation::open) {
@@ -184,7 +200,7 @@ void Protocol::complete(Reader& in) {
         reply.transferred=length;reply.data.assign(data.begin(),data.end());
     }
     if(!pending.abandoned) {require(replies_.size()<limits_.outstanding,"drive results must be drained");replies_.push_back(std::move(reply));}
-    tickets_.erase(request.ticket);pending_.erase(found);free_ids_.push_back(id);
+    tickets_.erase({request.purpose,request.ticket});pending_.erase(found);free_ids_.push_back(id);
 }
 void Protocol::tick(Clock::time_point now) const {
     for(const auto& [id,p]:pending_) {(void)id;require(now<p.deadline,"redirected device I/O timed out; connection must close to retire remote handles");}

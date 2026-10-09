@@ -8,6 +8,7 @@ Session::Session(std::unique_ptr<Desktop> desktop, std::uint32_t requested, std:
     : desktop_(std::move(desktop)), requested_protocols_(requested), selected_protocol_(selected),
       video_factory_(std::move(video)), graphics_enabled_(graphics) { require(desktop_ != nullptr, "session requires a desktop"); }
 Session::~Session() {
+    if (printers_) printers_->disconnect();
     if (drive_bridge_) drive_bridge_->disconnect(ENOTCONN);
     try { release_all_input(); } catch (...) {}
 }

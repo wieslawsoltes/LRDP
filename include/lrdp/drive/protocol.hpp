@@ -16,7 +16,19 @@ struct DeviceKey {
     std::uint64_t generation = 0;
     auto operator<=>(const DeviceKey&) const = default;
 };
-struct Device { DeviceKey key; std::string name; bool operator==(const Device&) const = default; };
+struct PrinterInfo {
+    std::uint32_t flags = 0;
+    std::string driver, name;
+    bool operator==(const PrinterInfo&) const = default;
+};
+struct Device {
+    DeviceKey key;
+    std::string name;
+    std::optional<PrinterInfo> printer;
+    bool operator==(const Device&) const = default;
+};
+// Local dispatch domain; never populated from peer-controlled packet contents.
+enum class Purpose { filesystem, printer };
 enum class Operation { open, close, read, write, query_information, query_directory, query_volume, set_information };
 struct Request {
     std::uint64_t ticket = 0;
@@ -27,6 +39,7 @@ struct Request {
     bool initial = true;
     std::string path;
     Bytes data;
+    Purpose purpose = Purpose::filesystem;
 };
 struct Reply {
     std::uint64_t ticket = 0;
@@ -34,12 +47,14 @@ struct Reply {
     std::uint64_t handle = 0;
     std::uint32_t transferred = 0;
     Bytes data;
+    Purpose purpose = Purpose::filesystem;
 };
 struct Limits {
     unsigned devices = 64, handles = 1024, outstanding = 64;
     std::uint32_t transfer = 65536;
     std::chrono::seconds timeout{30};
     bool writable = false;
+    bool files = true, printers = false;
 };
 Bytes pdu(unsigned packet, View body = {});
 std::uint64_t read_u64(Reader& in);
@@ -47,6 +62,7 @@ void write_u64(Writer& out, std::uint64_t value);
 // POSIX-relative names become a drive-rooted RDP path. No ADS, parent traversal,
 // remote UNC prefixes, embedded NUL, or alternate separator is accepted.
 std::string wire_path(std::string_view path, bool wildcard = false);
+PrinterInfo printer_information(View data);
 Bytes request_body(const Request& request, std::uint32_t limit);
 Bytes rename_information(std::string_view path, bool replace);
 
@@ -71,12 +87,12 @@ class Protocol final {
     Phase phase_ = Phase::idle;
     std::uint16_t minor_ = 13;
     std::uint32_t client_id_ = 0, extended_ = 0;
-    bool client_drives_ = false;
+    bool client_drives_ = false, client_printers_ = false;
     std::uint64_t next_generation_ = 1, next_handle_ = 1;
     std::map<std::uint32_t, Device> devices_;
     std::map<std::uint64_t, RemoteHandle> handles_;
     std::map<std::uint32_t, Pending> pending_;
-    std::set<std::uint64_t> tickets_;
+    std::set<std::pair<Purpose, std::uint64_t>> tickets_;
     std::deque<std::uint32_t> free_ids_;
     std::vector<Bytes> outbound_;
     std::vector<Reply> replies_;
