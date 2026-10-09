@@ -31,3 +31,10 @@ if(BUILD_TESTING AND TARGET lrdp_headless_app AND TARGET lrdp-sessiond)
     $<TARGET_FILE:lrdp-sessiond> $<TARGET_FILE:lrdp-sessionctl> $<TARGET_FILE:lrdp_headless_app>)
   set_tests_properties(persistent_reconnect PROPERTIES TIMEOUT 90)
 endif()
+
+if(BUILD_TESTING AND LRDP_TEST_NTLM AND TARGET lrdp_security AND TARGET lrdp-sessiond)
+  add_test(NAME persistent_nla COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/xvfb.py
+    ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/persistent_nla.py
+    $<TARGET_FILE:lrdpd> ${FREERDP_CLIENT} $<TARGET_FILE:lrdp-sessiond> $<TARGET_FILE:lrdp_headless_app>)
+  set_tests_properties(persistent_nla PROPERTIES TIMEOUT 90)
+endif()

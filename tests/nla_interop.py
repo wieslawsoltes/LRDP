@@ -16,7 +16,8 @@ import time
 from client_interop import pixel_oracle
 
 
-def scenario(binary: str, client_binary: str, root: pathlib.Path, allowed: bool, valid_password: bool) -> None:
+def scenario(binary: str, client_binary: str, root: pathlib.Path, allowed: bool, valid_password: bool,
+             server_options: tuple[str, ...] = (), activated_check=None) -> None:
     password = secrets.token_hex(24)
     users = root / 'ntlm-users'
     users.write_text(f'LRDPTEST:alice:{password}\n'); users.chmod(0o600)
@@ -28,7 +29,7 @@ def scenario(binary: str, client_binary: str, root: pathlib.Path, allowed: bool,
         args = [binary, '--cert', str(root / 'cert.pem'), '--key', str(root / 'key.pem'),
                 '--port', str(port), '--auth', 'nla', '--service', 'TERMSRV@localhost', '--allow-ntlm',
                 '--allow-principal', 'LRDPTEST\\alice' if allowed else 'LRDPTEST\\bob', '--encoder', 'raw', '--once']
-        server = subprocess.Popen(args, env=env, stdout=server_log, stderr=subprocess.STDOUT)
+        server = subprocess.Popen(args + list(server_options), env=env, stdout=server_log, stderr=subprocess.STDOUT)
         client = None
         try:
             deadline = time.monotonic() + 10
@@ -47,7 +48,7 @@ def scenario(binary: str, client_binary: str, root: pathlib.Path, allowed: bool,
                 server_log.seek(0); text = server_log.read()
                 if expected and 'Session active' in text:
                     assert 'NLA principal authorized: LRDPTEST\\alice' in text
-                    time.sleep(1); pixel_oracle()
+                    time.sleep(1); (activated_check or pixel_oracle)()
                     print('PASS: independent client NLA, sealed TLS binding, authorized principal and rendered desktop')
                     break
                 if not expected and server.poll() is not None:
