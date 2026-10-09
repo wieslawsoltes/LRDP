@@ -103,6 +103,12 @@ public:
             }
         }
     }
+    bool enable_rich_clipboard() override { return portal_.enable_rich_clipboard(); }
+    bool enable_file_clipboard() override { return portal_.enable_file_clipboard(); }
+    void set_clipboard_rich(RichClipboard content) override { portal_.set_clipboard_rich(std::move(content)); }
+    std::optional<RichClipboard> poll_clipboard_rich() override { return portal_.take_clipboard_rich(); }
+    void set_clipboard_files(std::vector<std::string> paths) override { portal_.set_clipboard_files(std::move(paths)); }
+    std::optional<std::vector<std::string>> poll_clipboard_files() override { return portal_.take_clipboard_files(); }
     void set_clipboard(std::string text) override { portal_.set_clipboard(std::move(text)); }
     std::optional<std::string> poll_clipboard() override { return portal_.take_clipboard(); }
     void release_input() override {

@@ -61,7 +61,8 @@ class FakePortal {
     GDBusNodeInfo* interfaces_ = nullptr;
     std::vector<guint> objects_;
     std::mutex mutex_;
-    std::string session_, peer_, source_, copied_;
+    std::string session_, peer_, copied_;
+    std::map<std::string, std::string> source_;
     std::map<unsigned, UniqueFd> writes_;
     bool clipboard_requested_ = false, started_ = false;
     void signal(const char* name, GVariant* parameters, const char* iface = clip, const char* path = object) {
@@ -118,7 +119,10 @@ class FakePortal {
         }
         if (method == "RequestClipboard") { check(!started_, "late clipboard request"); clipboard_requested_ = true; }
         else if (method == "OpenPipeWireRemote") { auto fd = memory("granted-fd"); return_fd(invocation, fd.get()); return; }
-        else if (method == "SelectionRead") { auto fd = memory(source_); return_fd(invocation, fd.get()); return; }
+        else if (method == "SelectionRead") {
+            const gchar *path = nullptr, *mime = nullptr; g_variant_get(parameters, "(&o&s)", &path, &mime);
+            check(path == session_, "wrong read session"); auto fd = memory(source_.at(mime)); return_fd(invocation, fd.get()); return;
+        }
         else if (method == "SelectionWrite") {
             const gchar* path = nullptr; guint serial = 0; g_variant_get(parameters, "(&ou)", &path, &serial);
             auto fd = memory(""); return_fd(invocation, fd.get()); writes_.insert_or_assign(serial, std::move(fd)); return;
@@ -126,7 +130,7 @@ class FakePortal {
             const gchar* path = nullptr; guint serial = 0; gboolean success = FALSE; g_variant_get(parameters, "(&oub)", &path, &serial, &success);
             if (success) {
                 auto it = writes_.find(serial); check(it != writes_.end(), "write completed without a descriptor");
-                const auto size = lseek(it->second.get(), 0, SEEK_END); check(size >= 0 && size <= 1024 * 1024, "invalid copied text length");
+                const auto size = lseek(it->second.get(), 0, SEEK_END); check(size >= 0 && size <= 8 * 1024 * 1024, "invalid copied text length");
                 copied_.resize(std::size_t(size)); check(pread(it->second.get(), copied_.data(), copied_.size(), 0) == size, "copied text unreadable");
                 writes_.erase(it); ++successful_copies;
             } else ++failed_copies;
@@ -179,10 +183,12 @@ public:
         g_main_context_invoke(context_, [](gpointer data) -> gboolean { g_main_loop_quit(static_cast<GMainLoop*>(data)); return G_SOURCE_REMOVE; }, loop_);
         thread_.join();
     }
-    void offer(std::string text) {
-        std::lock_guard lock(mutex_); source_ = std::move(text); const gchar* types[] = {"text/plain;charset=utf-8"};
+    void offer(std::string text) { offer_formats({{"text/plain;charset=utf-8", std::move(text)}}); }
+    void offer_formats(std::map<std::string, std::string> content) {
+        std::lock_guard lock(mutex_); source_ = std::move(content); std::vector<const gchar*> types;
+        for (const auto& [type, unused] : source_) { (void)unused; types.push_back(type.c_str()); }
         signal("SelectionOwnerChanged", g_variant_new("(o@a{sv})", session_.c_str(),
-            dict({{"session_is_owner", g_variant_new_boolean(FALSE)}, {"mime_types", g_variant_new_strv(types, 1)}})));
+            dict({{"session_is_owner", g_variant_new_boolean(FALSE)}, {"mime_types", g_variant_new_strv(types.data(), gssize(types.size()))}})));
     }
     void copy(unsigned serial, const char* mime = "text/plain;charset=utf-8") {
         std::lock_guard lock(mutex_); signal("SelectionTransfer", g_variant_new("(osu)", session_.c_str(), mime, serial));
@@ -214,6 +220,37 @@ int main() {
                 session.set_clipboard(large); until([&] { return fake.selections == 1; });
                 fake.copy(17); until([&] { return fake.successful_copies == 1; }); check(fake.copied() == large, "portal clipboard output corrupted");
                 fake.copy(18, "application/unsupported"); until([&] { return fake.failed_copies == 1; });
+                check(session.enable_rich_clipboard() && session.enable_file_clipboard(), "optional native formats were not enabled");
+                RichClipboard rich; rich.text = "plain 🚀"; rich.html = "<p>" + std::string(1200000, 'h') + "日本語</p>";
+                rich.image = ClipboardImage{2, 2, {0, 0, 255, 255, 0, 128, 0, 128, 255, 0, 0, 255, 4, 5, 6, 0}};
+                const auto bmp = encode_clipboard_bmp(*rich.image);
+                fake.offer_formats({{"text/plain;charset=utf-8", *rich.text}, {"text/html", *rich.html},
+                    {"image/bmp", std::string(bmp.begin(), bmp.end())}});
+                std::optional<RichClipboard> native_rich;
+                until([&] { if (auto value = session.take_clipboard_rich()) native_rich = std::move(value); return native_rich && native_rich->html.has_value(); });
+                check(native_rich->text == rich.text && native_rich->html == rich.html && native_rich->image == rich.image, "portal multi-format incoming snapshot");
+                session.set_clipboard_rich(rich); until([&] { return fake.selections == 2; });
+                fake.copy(20, "text/html"); until([&] { return fake.successful_copies == 2; });
+                check(fake.copied() == *rich.html, "large HTML outgoing descriptor stream");
+#ifdef LRDP_TEST_PNG
+                fake.copy(21, "image/png"); until([&] { return fake.successful_copies == 3; });
+                const auto png = fake.copied();
+                check(decode_clipboard_png(View(reinterpret_cast<const std::uint8_t*>(png.data()), png.size())) == *rich.image, "portal alpha PNG export");
+#else
+                fake.copy(21, "image/bmp"); until([&] { return fake.successful_copies == 3; });
+                check(fake.copied() == std::string(bmp.begin(), bmp.end()), "portal BMP export");
+#endif
+                fake.offer_formats({{"text/uri-list", "file:///tmp/a%20b.txt\r\nfile:///tmp/%E6%97%A5%E6%9C%AC\r\n"}, {"text/html", "ignored for file selection"}});
+                std::optional<std::vector<std::string>> paths;
+                until([&] { if (auto value = session.take_clipboard_files()) paths = std::move(value); return paths.has_value(); });
+                check(*paths == std::vector<std::string>{"/tmp/a b.txt", "/tmp/日本"}, "portal file URI conversion and precedence");
+                session.set_clipboard_files(*paths); until([&] { return fake.selections == 3; });
+                fake.copy(22, "x-special/gnome-copied-files"); until([&] { return fake.successful_copies == 4; });
+                check(fake.copied() == "copy\nfile:///tmp/a%20b.txt\nfile:///tmp/%E6%97%A5%E6%9C%AC\n", "portal copied-files ownership");
+                fake.offer_formats({{"text/uri-list", "file://untrusted-host/a.txt\r\n"}});
+                std::optional<std::string> cleared;
+                until([&] { if (auto value = session.take_clipboard()) cleared = std::move(value); return cleared.has_value(); });
+                check(cleared->empty(), "invalid local files clear the stale remote offer");
                 fake.revoke(); bool rejected = false; const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
                 while (!rejected && std::chrono::steady_clock::now() < deadline) {
                     try { session.poll(); } catch (const ProtocolError&) { rejected = true; } ::poll(nullptr, 0, 1);
@@ -222,13 +259,13 @@ int main() {
             }
             check(fake.closes == 1, "portal session was not closed on destruction");
             fake.grant_clipboard = false;
-            { PortalSession no_clipboard; check(!no_clipboard.clipboard_available(), "denied clipboard was advertised"); }
+            { PortalSession no_clipboard; check(!no_clipboard.clipboard_available() && !no_clipboard.enable_file_clipboard() && !no_clipboard.enable_rich_clipboard(), "denied clipboard was advertised"); }
             fake.deny_start = true; bool denied = false;
             try { PortalSession cancelled; } catch (const ProtocolError&) { denied = true; }
             check(denied && fake.closes == 3 && !fake.failed, "cancelled consent leaked a session");
         }
         g_test_dbus_down(bus); g_object_unref(bus);
-        std::cout << "PASS: private D-Bus portal, early response race, granted descriptors, input API, 180 KiB clipboard both ways, permission denial/revocation and cleanup\n";
+        std::cout << "PASS: private D-Bus portal, early response race, granted descriptors, input API, 180 KiB text, 1.2 MB HTML, alpha images, file URIs, permission denial/revocation and cleanup\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "FAIL: " << error.what() << '\n'; g_test_dbus_down(bus); g_object_unref(bus); return 1;
