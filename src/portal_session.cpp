@@ -1,4 +1,6 @@
 #include "lrdp/platform/portal_session.hpp"
+#include "lrdp/platform/mime_clipboard.hpp"
+#include "lrdp/clipboard/file_uri.hpp"
 #include <gio/gio.h>
 #include <gio/gunixfdlist.h>
 #include <algorithm>
@@ -54,7 +56,7 @@ struct Subscription {
     ~Subscription() { if (id) g_dbus_connection_signal_unsubscribe(connection, id); }
 };
 }
-struct PortalSession::Impl {
+struct PortalSession::Impl : MimeClipboardTransport {
     Context context;
     std::unique_ptr<GDBusConnection, ObjectDelete> bus;
     std::unique_ptr<GCancellable, ObjectDelete> cancel{g_cancellable_new()};
@@ -64,21 +66,34 @@ struct PortalSession::Impl {
     struct AsyncState { unsigned pending = 0; bool failed = false, stopping = false; };
     std::shared_ptr<AsyncState> async = std::make_shared<AsyncState>();
     bool closed = false, clipboard_enabled = false;
-    std::uint64_t generation = 0;
-    std::optional<std::string> requested_mime, ready_text;
-    struct ReadTransfer { UniqueFd fd; std::string text; std::uint64_t generation; Clock::time_point deadline; };
-    std::optional<ReadTransfer> incoming;
-    struct WriteRequest { std::uint32_t serial; std::string mime; std::shared_ptr<const std::string> text; };
-    struct WriteTransfer { UniqueFd fd; std::shared_ptr<const std::string> text; std::size_t offset; Clock::time_point deadline; };
-    std::deque<WriteRequest> requests;
-    std::map<std::uint32_t, WriteTransfer> outgoing;
-    std::shared_ptr<const std::string> local;
+    MimeClipboard mime{*this};
+    bool rich_enabled = false, files_enabled = false;
+    std::optional<std::string> ready_text;
+    std::optional<RichClipboard> ready_rich;
+    std::optional<std::vector<std::string>> ready_files;
+    Impl() { configure_mimes(); }
+    void configure_mimes() {
+        std::vector<std::string> formats{utf8_mime, "text/plain"};
+        if (files_enabled) {
+            formats.insert(formats.begin(), {"x-special/gnome-copied-files", "text/uri-list"});
+        }
+        if (rich_enabled) {
+            formats.push_back("text/html");
+#ifdef LRDP_HAVE_PNG
+            formats.push_back("image/png");
+#endif
+            formats.push_back("image/bmp"); formats.push_back("image/x-bmp");
+        }
+        clear_ready(); mime.supported(std::move(formats));
+    }
+    void clear_ready() { ready_text.reset(); ready_rich.reset(); ready_files.reset(); }
+    static MimeBytes bytes(std::string_view text) { return std::make_shared<const Bytes>(text.begin(), text.end()); }
 
     ~Impl() {
         context.check(); async->stopping = true;
         if (bus) {
             for (auto id : subscriptions) g_dbus_connection_signal_unsubscribe(bus.get(), id);
-            subscriptions.clear(); incoming.reset(); outgoing.clear(); requests.clear();
+            subscriptions.clear(); mime.clear(); clear_ready();
             if (!session.empty() && !g_dbus_connection_is_closed(bus.get())) {
                 Error error;
                 Variant ignored(g_dbus_connection_call_sync(bus.get(), owner.c_str(), session.c_str(), session_interface,
@@ -167,24 +182,24 @@ struct PortalSession::Impl {
         require(g_variant_is_of_type(parameters, G_VARIANT_TYPE("(oa{sv})")), "invalid clipboard owner signal");
         const gchar* path = nullptr; GVariant* raw = nullptr; g_variant_get(parameters, "(&o@a{sv})", &path, &raw); Variant fields(raw);
         if (path != session) return;
-        ++generation; incoming.reset(); requested_mime.reset(); ready_text.reset();
-        gboolean own = FALSE; g_variant_lookup(fields.get(), "session_is_owner", "b", &own); if (own) return;
+        clear_ready();
+        gboolean own = FALSE; g_variant_lookup(fields.get(), "session_is_owner", "b", &own);
         Variant formats(g_variant_lookup_value(fields.get(), "mime_types", G_VARIANT_TYPE_STRING_ARRAY));
-        if (!formats) return;
-        require(g_variant_n_children(formats.get()) <= 256, "too many portal clipboard formats");
-        GVariantIter iter; g_variant_iter_init(&iter, formats.get()); const gchar* name = nullptr;
-        while (g_variant_iter_next(&iter, "&s", &name)) {
-            if (std::string_view(name) == utf8_mime) { requested_mime = name; break; }
-            if (std::string_view(name) == "text/plain") requested_mime = name;
+        std::vector<std::string> names;
+        if (formats) {
+            require(g_variant_n_children(formats.get()) <= 256, "too many portal clipboard formats");
+            GVariantIter iter; g_variant_iter_init(&iter, formats.get()); const gchar* name = nullptr;
+            while (g_variant_iter_next(&iter, "&s", &name)) names.emplace_back(name);
         }
+        mime.owner_changed(std::move(names), own);
     }
     void transfer(GVariant* parameters) {
         require(g_variant_is_of_type(parameters, G_VARIANT_TYPE("(osu)")), "invalid clipboard transfer signal");
-        const gchar* path = nullptr; const gchar* mime = nullptr; guint serial = 0;
-        g_variant_get(parameters, "(&o&su)", &path, &mime, &serial); if (path != session) return;
-        require(requests.size() + outgoing.size() < 16, "portal clipboard transfer queue exceeded");
-        requests.push_back({serial, mime, local});
+        const gchar* path = nullptr; const gchar* type = nullptr; guint serial = 0;
+        g_variant_get(parameters, "(&o&su)", &path, &type, &serial); if (path != session) return;
+        mime.transfer(serial, type);
     }
+
     void start() {
         Error error; gchar* address = g_dbus_address_get_for_bus_sync(G_BUS_TYPE_SESSION, cancel.get(), &error.value);
         error.check(address, "resolve session bus"); std::unique_ptr<gchar, decltype(&g_free)> location(address, g_free);
@@ -257,58 +272,54 @@ struct PortalSession::Impl {
         require(width >= 0 && height >= 0 && width <= 32768 && height <= 32768, "invalid portal logical dimensions");
         selected.logical_width = unsigned(width); selected.logical_height = unsigned(height); check();
     }
-    void done(std::uint32_t serial, bool success) {
+    UniqueFd read_mime(const std::string& type) override {
+        return descriptor(clipboard, "SelectionRead", g_variant_new("(os)", session.c_str(), type.c_str()));
+    }
+    UniqueFd write_mime(std::uint32_t serial) override {
+        return descriptor(clipboard, "SelectionWrite", g_variant_new("(ou)", session.c_str(), serial));
+    }
+    void finish_mime(std::uint32_t serial, bool success) override {
         enqueue(clipboard, "SelectionWriteDone", g_variant_new("(oub)", session.c_str(), serial, gboolean(success)));
+    }
+    void offer_mimes(const std::vector<std::string>& formats) override {
+        std::vector<const gchar*> names;
+        for (const auto& format : formats) names.push_back(format.c_str());
+        enqueue(clipboard, "SetSelection", g_variant_new("(o@a{sv})", session.c_str(),
+            options({{"mime_types", g_variant_new_strv(names.data(), gssize(names.size()))}})));
     }
     void poll() {
         context.iterate(); check(); if (!clipboard_enabled) return;
-        if (requested_mime) {
-            auto mime = std::move(*requested_mime); requested_mime.reset();
-            auto fd = descriptor(clipboard, "SelectionRead", g_variant_new("(os)", session.c_str(), mime.c_str())); fd.nonblocking();
-            incoming.emplace(ReadTransfer{std::move(fd), {}, generation, Clock::now() + std::chrono::seconds(5)});
-        }
-        if (incoming) {
-            auto& input = *incoming;
-            if (input.generation != generation || Clock::now() >= input.deadline) incoming.reset();
-            else {
-                char buffer[16384];
-                for (unsigned i = 0; i < 4 && incoming; ++i) {
-                    const auto n = ::read(input.fd.get(), buffer, sizeof(buffer));
-                    if (n > 0) {
-                        if (std::size_t(n) > clipboard_quota - input.text.size()) { incoming.reset(); break; }
-                        input.text.append(buffer, std::size_t(n));
-                    } else if (n == 0) {
-                        try { require(utf16le(input.text).size() <= clipboard_quota, "clipboard text exceeds wire quota"); ready_text = std::move(input.text); }
-                        catch (const ProtocolError&) {}
-                        incoming.reset();
-                    } else if (errno == EINTR) continue;
-                    else if (errno == EAGAIN || errno == EWOULDBLOCK) break;
-                    else incoming.reset();
+        mime.poll(); auto content = mime.take(); if (!content) return;
+        clear_ready();
+        auto text = [&](std::string_view name) -> std::optional<std::string> {
+            const auto it = content->find(name); if (it == content->end()) return {};
+            return std::string(it->second->begin(), it->second->end());
+        };
+        try {
+            if (files_enabled) {
+                if (auto uris = text("x-special/gnome-copied-files")) { ready_files = decode_file_uris(*uris, true); return; }
+                if (auto uris = text("text/uri-list")) { ready_files = decode_file_uris(*uris); return; }
+            }
+            RichClipboard result;
+            result.text = text(utf8_mime); if (!result.text) result.text = text("text/plain");
+            if (result.text) require(utf16le(*result.text).size() <= clipboard_quota, "portal text exceeds RDP text quota");
+            if (rich_enabled) {
+                result.html = text("text/html");
+#ifdef LRDP_HAVE_PNG
+                if (auto it = content->find("image/png"); it != content->end()) result.image = decode_clipboard_png(*it->second);
+#endif
+                if (!result.image) for (const char* type : {"image/bmp", "image/x-bmp"}) {
+                    if (auto it = content->find(type); it != content->end()) { result.image = decode_clipboard_bmp(*it->second); break; }
                 }
-            }
-        }
-        if (!requests.empty()) {
-            auto request = std::move(requests.front()); requests.pop_front();
-            if (!request.text || (request.mime != utf8_mime && request.mime != "text/plain") || outgoing.contains(request.serial)) done(request.serial, false);
-            else {
-                auto fd = descriptor(clipboard, "SelectionWrite", g_variant_new("(ou)", session.c_str(), request.serial)); fd.nonblocking();
-                outgoing.emplace(request.serial, WriteTransfer{std::move(fd), std::move(request.text), 0, Clock::now() + std::chrono::seconds(5)});
-            }
-        }
-        std::size_t budget = 65536;
-        for (auto it = outgoing.begin(); it != outgoing.end();) {
-            auto& output = it->second; bool failed = Clock::now() >= output.deadline;
-            if (!failed && budget && output.offset < output.text->size()) {
-                const auto count = std::min(budget, output.text->size() - output.offset);
-                const auto n = ::write(output.fd.get(), output.text->data() + output.offset, count);
-                if (n > 0) { output.offset += std::size_t(n); budget -= std::size_t(n); }
-                else if (n < 0 && errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK) failed = true;
-            }
-            if (failed || output.offset == output.text->size()) {
-                const auto serial = it->first; output.fd.reset(); it = outgoing.erase(it); done(serial, !failed);
-            } else ++it;
+                result.validate(); ready_rich = std::move(result);
+            } else ready_text = result.text.value_or("");
+        } catch (const ProtocolError&) {
+            // Bad local MIME data must clear the previous remote offer, not expose
+            // stale files or disconnect a correctly authenticated RDP session.
+            ready_text = "";
         }
     }
+
 };
 PortalSession::PortalSession() : impl_(std::make_unique<Impl>()) { impl_->start(); }
 PortalSession::~PortalSession() = default;
@@ -344,13 +355,49 @@ void PortalSession::wheel(bool horizontal, int steps) {
     require(steps >= -32 && steps <= 32, "portal wheel burst exceeds policy");
     impl_->enqueue(remote, "NotifyPointerAxisDiscrete", g_variant_new("(o@a{sv}ui)", impl_->session.c_str(), options(), guint(horizontal), gint(steps)));
 }
+bool PortalSession::enable_rich_clipboard() {
+    impl_->check(); if (!impl_->clipboard_enabled) return false;
+    impl_->rich_enabled = true; impl_->configure_mimes(); return true;
+}
+bool PortalSession::enable_file_clipboard() {
+    impl_->check(); if (!impl_->clipboard_enabled) return false;
+    impl_->files_enabled = true; impl_->configure_mimes(); return true;
+}
+void PortalSession::set_clipboard_rich(RichClipboard content) {
+    impl_->check(); require(impl_->clipboard_enabled && impl_->rich_enabled, "portal rich clipboard was not enabled");
+    content.validate(); MimeContent formats;
+    if (content.text) {
+        require(utf16le(*content.text).size() <= clipboard_quota, "portal text exceeds RDP text quota");
+        auto bytes = Impl::bytes(*content.text); formats.emplace(utf8_mime, bytes); formats.emplace("text/plain", bytes);
+    }
+    if (content.html) formats.emplace("text/html", Impl::bytes(*content.html));
+    if (content.image) {
+#ifdef LRDP_HAVE_PNG
+        formats.emplace("image/png", std::make_shared<const Bytes>(encode_clipboard_png(*content.image)));
+#else
+        formats.emplace("image/bmp", std::make_shared<const Bytes>(encode_clipboard_bmp(*content.image)));
+#endif
+    }
+    impl_->clear_ready(); impl_->mime.set(std::move(formats));
+}
+std::optional<RichClipboard> PortalSession::take_clipboard_rich() {
+    impl_->check(); auto result = std::move(impl_->ready_rich); impl_->ready_rich.reset(); return result;
+}
+void PortalSession::set_clipboard_files(std::vector<std::string> paths) {
+    impl_->check(); require(impl_->clipboard_enabled && impl_->files_enabled, "portal file clipboard was not enabled");
+    MimeContent formats;
+    formats.emplace("text/uri-list", Impl::bytes(encode_file_uris(paths)));
+    formats.emplace("x-special/gnome-copied-files", Impl::bytes(encode_file_uris(paths, true)));
+    impl_->clear_ready(); impl_->mime.set(std::move(formats));
+}
+std::optional<std::vector<std::string>> PortalSession::take_clipboard_files() {
+    impl_->check(); auto result = std::move(impl_->ready_files); impl_->ready_files.reset(); return result;
+}
 void PortalSession::set_clipboard(std::string text) {
     impl_->check(); require(impl_->clipboard_enabled, "portal clipboard was not granted");
     require(text.size() <= clipboard_quota && utf16le(text).size() <= clipboard_quota, "portal clipboard text exceeds quota");
-    impl_->local = std::make_shared<const std::string>(std::move(text));
-    ++impl_->generation; impl_->incoming.reset(); impl_->ready_text.reset(); impl_->requested_mime.reset();
-    const gchar* types[] = {utf8_mime, "text/plain"};
-    impl_->enqueue(clipboard, "SetSelection", g_variant_new("(o@a{sv})", impl_->session.c_str(), options({{"mime_types", g_variant_new_strv(types, 2)}})));
+    const auto bytes = Impl::bytes(text); impl_->clear_ready();
+    impl_->mime.set({{utf8_mime, bytes}, {"text/plain", bytes}});
 }
 std::optional<std::string> PortalSession::take_clipboard() {
     impl_->check(); auto result = std::move(impl_->ready_text); impl_->ready_text.reset(); return result;
