@@ -12,9 +12,17 @@ struct EncodedVideo;
 Bytes graphics_pdu(std::uint16_t command, View payload);
 Bytes graphics_segments(View payload);
 
+// Client telemetry is advisory and must never release frame credits.
 struct GraphicsQoe {
     std::uint32_t frame_id = 0, timestamp = 0;
     std::uint16_t decode_ms = 0, render_ms = 0;
+    // Relative to the first sample; absent after a backward/ambiguous timestamp.
+    std::optional<std::uint64_t> client_elapsed_ms;
+};
+using GraphicsQoeSample = GraphicsQoe;
+struct GraphicsTelemetry {
+    std::uint64_t qoe_samples = 0, timestamp_discontinuities = 0;
+    std::optional<GraphicsQoe> latest_qoe;
 };
 
 class Graphics {
@@ -22,10 +30,11 @@ class Graphics {
     LosslessEncoder lossless_;
     bool negotiated_ = false, video_enabled_ = false, surface_ = false;
     VideoCodec codec_ = VideoCodec::avc420;
-    std::uint32_t capability_version_ = 0;
-    std::optional<GraphicsQoe> qoe_;
     bool acknowledgements_ = true;
     std::uint32_t frame_id_ = 0, queue_depth_ = 0;
+    std::uint32_t version_ = 0, first_generation_frame_ = 1;
+    std::uint64_t negotiation_generation_ = 0;
+    GraphicsTelemetry telemetry_;
     std::uint16_t width_ = 0, height_ = 0;
     std::deque<std::pair<std::uint32_t, Clock::time_point>> pending_;
     std::vector<Bytes> outbound_;
@@ -44,8 +53,11 @@ public:
     const LosslessStatistics& lossless_statistics() const { return lossless_.statistics(); }
     void video_frame(View annex_b, unsigned width, unsigned height, unsigned qp = 22);
     void video_frame(const EncodedVideo& frame);
-    [[nodiscard]] const std::optional<GraphicsQoe>& latest_qoe() const { return qoe_; }
-    [[nodiscard]] std::uint32_t capability_version() const { return capability_version_; }
+    [[nodiscard]] const std::optional<GraphicsQoe>& latest_qoe() const { return telemetry_.latest_qoe; }
+    [[nodiscard]] std::uint32_t capability_version() const { return version_; }
+    [[nodiscard]] std::uint32_t version() const { return version_; }
+    [[nodiscard]] std::uint64_t negotiation_generation() const { return negotiation_generation_; }
+    [[nodiscard]] const GraphicsTelemetry& telemetry() const { return telemetry_; }
     [[nodiscard]] bool ready() const { return negotiated_ && surface_; }
     [[nodiscard]] bool avc420() const { return video_enabled_ && codec_ == VideoCodec::avc420; }
     [[nodiscard]] bool video_enabled() const { return video_enabled_; }
