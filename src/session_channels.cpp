@@ -23,10 +23,13 @@ void Session::static_channel(std::uint16_t channel, View payload) {
         } else if (event.id == 2 && event.kind == DvcEventKind::data) {
             if (!graphics_.receive(event.data, bool(video_factory_))) {
                 send_channel(channel, dynamic_.close(2)); graphics_requested_ = false;
+                video_.reset(); invalidate_graphics();
                 graphics_status_ = "No implemented GFX capability offered; using bitmap updates";
             } else {
                 if (!graphics_.ready()) {
-                    graphics_.reset(active_layout_); graphics_reset_ = false; previous_graphics_ = {};
+                    // A capability reset also retires outstanding H.264 references.
+                    video_.reset(); invalidate_graphics();
+                    graphics_.reset(active_layout_); graphics_reset_ = false;
                     if (graphics_.video_enabled()) video_ = std::make_unique<VideoWorker>(video_factory_, graphics_.video_codec());
                     graphics_status_ = graphics_.video_enabled() ? std::string(codec_name(graphics_.video_codec())) + " negotiated; encoder initialization pending" : lossless_graphics_ ? "GFX lossless ClearCodec/solid/raw" : "GFX uncompressed BGRA";
                 }

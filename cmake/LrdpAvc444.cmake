@@ -22,3 +22,16 @@ if(BUILD_TESTING AND TARGET lrdp_video)
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/avc_integration.py $<TARGET_FILE:lrdpd> $<TARGET_FILE:lrdp_avc_decode_oracle>)
   set_tests_properties(avc444_session PROPERTIES TIMEOUT 60)
 endif()
+
+if(BUILD_TESTING)
+  add_executable(lrdp_graphics_compatibility_tests tests/graphics_compatibility_tests.cpp)
+  target_link_libraries(lrdp_graphics_compatibility_tests PRIVATE lrdp_protocol)
+  add_test(NAME graphics_compatibility COMMAND lrdp_graphics_compatibility_tests)
+endif()
+if(BUILD_TESTING AND TARGET lrdpd)
+  add_test(NAME gfx_compatibility_session COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/gfx_compatibility_integration.py $<TARGET_FILE:lrdpd>)
+  add_test(NAME gfx_compatibility_lossless_session COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/gfx_compatibility_integration.py $<TARGET_FILE:lrdpd> --lossless)
+  set_tests_properties(gfx_compatibility_session gfx_compatibility_lossless_session PROPERTIES TIMEOUT 45)
+endif()

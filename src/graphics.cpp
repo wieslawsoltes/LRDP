@@ -37,7 +37,9 @@ bool Graphics::receive(View message, bool video_available) {
         const auto size = messages.le32(); require(size >= 8, "invalid graphics PDU size");
         Reader in(messages.take(size - 8));
         if (command == 0x12) {
-            require(!negotiated_, "duplicate graphics capability advertisement");
+            // MS-RDPEGFX 3.2.5.18 permits a complete in-channel reset from 10.3 onward.
+            require(!negotiated_ || version_ >= 0x000a0301,
+                    "graphics capability reset requires previously negotiated version 10.3+");
             const auto count = in.le16(); require(count > 0 && count <= 64, "invalid graphics capability count");
             struct Choice {
                 unsigned score = 0;
@@ -55,11 +57,21 @@ bool Graphics::receive(View message, bool video_available) {
                     choice.video = video_available && (cap.le32() & 0x10);
                     choice.flags = 2U | (choice.video ? 0x10U : 0U);
                     choice.score = choice.video ? 10U : 1U;
-                } else if (version == 0x000a0002 || version == 0x000a0200) {
-                    require(length == 4, "invalid graphics 10/10.2 capability");
-                    choice.video = video_available && !(cap.le32() & 0x20);
+                } else if (version == 0x000a0002 || version == 0x000a0200 ||
+                           version == 0x000a0301 || version == 0x000a0400 ||
+                           version == 0x000a0502 || version == 0x000a0600 || version == 0x000a0701) {
+                    require(length == 4, "invalid graphics 10.x capability");
+                    const auto flags = cap.le32();
+                    require(version < 0x000a0301 || (flags & 0x60) != 0x60,
+                            "AVC_THINCLIENT conflicts with AVC_DISABLED");
+                    choice.video = video_available && !(flags & 0x20);
+                    // These sets mandate YUV444. Select v1 conservatively; only
+                    // the explicit 10.1 capability selects the existing v2 path.
                     choice.codec = VideoCodec::avc444;
-                    choice.flags = 2U | (choice.video ? 0U : 0x20U);
+                    choice.flags = (version == 0x000a0301 ? 0U : 2U) |
+                                   (choice.video ? 0U : 0x20U);
+                    // LRDP maps to unscaled outputs; never promise scaled mapping.
+                    if (version == 0x000a0701) choice.flags |= 0x80U;
                     choice.score = choice.video ? 20U : 2U;
                 } else if (version == 0x000a0100) {
                     // 10.1 has 16 reserved bytes, not the 4-byte 10.x flags field.
@@ -68,35 +80,60 @@ bool Graphics::receive(View message, bool video_available) {
                     choice.length = 16; choice.video = video_available;
                     choice.codec = VideoCodec::avc444v2; choice.score = choice.video ? 30U : 0U;
                 }
-                if (choice.score > selected.score) selected = choice;
+                if (choice.score > selected.score ||
+                    (choice.score && choice.score == selected.score && choice.version > selected.version))
+                    selected = choice;
             }
             in.end();
             if (!selected.score) return false;
             Writer confirm; confirm.le32(selected.version).le32(selected.length);
             if (selected.length == 16) confirm.zeros(16); else confirm.le32(selected.flags);
-            emit(0x13, confirm.bytes());
-            capability_version_ = selected.version;
+            auto confirmation = graphics_segments(graphics_pdu(0x13, confirm.bytes()));
+            require(frame_id_ < std::numeric_limits<std::uint32_t>::max() &&
+                    negotiation_generation_ < std::numeric_limits<std::uint64_t>::max(),
+                    "graphics identifiers exhausted");
+            // Build the reply before mutation. The client has discarded every
+            // pre-confirmation surface/cache/decoder and old frame credit.
+            std::vector<Bytes> next; next.push_back(std::move(confirmation));
+            outbound_.swap(next); pending_.clear(); surface_ = false;
+            // A capability reset discards the client ClearCodec decoder too.
+            // Ordinary desktop resize continues to use invalidate(), not this.
+            lossless_ = LosslessEncoder{};
+            width_ = height_ = 0; queue_depth_ = 0; acknowledgements_ = true;
+            first_generation_frame_ = frame_id_ + 1; telemetry_ = {};
             codec_ = selected.codec; video_enabled_ = selected.video; negotiated_ = true;
+            version_ = selected.version; ++negotiation_generation_;
         } else if (command == 0x0d) {
             require(negotiated_, "graphics acknowledgement before capabilities");
             const auto depth = in.le32(), id = in.le32(); (void)in.le32(); in.end();
             require(id <= frame_id_, "graphics acknowledgement refers to an unsent frame");
+            // Late acknowledgements from the discarded generation are harmless.
+            if (id < first_generation_frame_) continue;
             queue_depth_ = depth; acknowledgements_ = depth != 0xffffffffU;
             if (!acknowledgements_) pending_.clear();
             else while (!pending_.empty() && pending_.front().first <= id) pending_.pop_front();
         } else if (command == 0x16) {
-            // MS-RDPEGFX 2.2.2.21 / 3.2.5.21: QoE is informational only.
-            // It MUST NOT release flow-control credit or extend ACK deadlines.
-            require(negotiated_ && (capability_version_ == 0x000a0002 || capability_version_ == 0x000a0200),
-                    "QoE acknowledgement was not negotiated");
-            GraphicsQoe sample;
+            // MS-RDPEGFX 2.2.2.21 / 3.2.5.21: informational, NOT a frame ACK.
+            require(negotiated_ && version_ >= 0x000a0002 && version_ != 0x000a0100,
+                    "QoE telemetry was not negotiated");
+            GraphicsQoeSample sample;
             sample.frame_id = in.le32(); sample.timestamp = in.le32();
             sample.decode_ms = in.le16(); sample.render_ms = in.le16(); in.end();
-            require(sample.frame_id > 0 && sample.frame_id <= frame_id_, "QoE refers to an unsent frame");
-            // Frame IDs do not wrap within a connection. Keeping just the latest
-            // annotated frame tolerates late reports and wrapping client clocks;
-            // timestamps are never compared against the server's monotonic clock.
-            if (!qoe_ || sample.frame_id >= qoe_->frame_id) qoe_ = sample;
+            require(sample.frame_id > 0 && sample.frame_id <= frame_id_, "QoE annotation refers to an unsent frame");
+            if (sample.frame_id < first_generation_frame_) continue;
+            auto& stats = telemetry_;
+            if (stats.qoe_samples != std::numeric_limits<std::uint64_t>::max()) ++stats.qoe_samples;
+            if (stats.latest_qoe && sample.frame_id <= stats.latest_qoe->frame_id) continue;
+            if (!stats.latest_qoe) sample.client_elapsed_ms = 0;
+            else {
+                const auto delta = std::uint32_t(sample.timestamp - stats.latest_qoe->timestamp);
+                if (delta <= 0x7fffffffU && stats.latest_qoe->client_elapsed_ms &&
+                    *stats.latest_qoe->client_elapsed_ms <= std::numeric_limits<std::uint64_t>::max() - delta)
+                    sample.client_elapsed_ms = *stats.latest_qoe->client_elapsed_ms + delta;
+                else if (stats.timestamp_discontinuities != std::numeric_limits<std::uint64_t>::max())
+                    ++stats.timestamp_discontinuities;
+            }
+            stats.latest_qoe = sample;
         } else if (command == 0x10) {
             require(negotiated_, "graphics cache offer before capabilities");
             const auto count = in.le16();
