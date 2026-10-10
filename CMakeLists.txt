@@ -125,3 +125,5 @@ include(cmake/LrdpReconnect.cmake)
 include(cmake/LrdpLossless.cmake)
 
 include(cmake/LrdpPrinting.cmake)
+
+include(cmake/LrdpDeployment.cmake)
